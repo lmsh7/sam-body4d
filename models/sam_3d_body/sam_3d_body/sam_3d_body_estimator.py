@@ -292,7 +292,7 @@ class SAM3DBodyEstimator:
         batch_dict['bbox_format'] = batch_list[0]['bbox_format']
 
         #################### Run model inference on an image ####################
-        batch_dict = recursive_to(batch_dict, "cuda")
+        batch_dict = recursive_to(batch_dict, self.device)
         self.model._initialize_batch(batch_dict)
 
         outputs = self.model.run_inference_batch(
@@ -489,7 +489,7 @@ class SAM3DBodyEstimator:
         batch = prepare_batch(img, self.transform, boxes, masks, masks_score)
 
         #################### Run model inference on an image ####################
-        batch = recursive_to(batch, "cuda")
+        batch = recursive_to(batch, self.device)
         self.model._initialize_batch(batch)
 
         # Handle camera intrinsics

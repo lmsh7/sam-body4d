@@ -17,27 +17,25 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-def init_amodal_segmentation_model(model_path_mask):
+def init_amodal_segmentation_model(model_path_mask, device="cuda"):
     pipeline_mask = DiffusionVASPipeline.from_pretrained(
         model_path_mask, dtype=torch.float16
-    ).to("cuda")
-    pipeline_mask.enable_model_cpu_offload()
+    ).to(device)
     pipeline_mask.set_progress_bar_config(disable=True)
 
     return pipeline_mask
 
 
-def init_rgb_model(model_path_rgb):
+def init_rgb_model(model_path_rgb, device="cuda"):
     pipeline_rgb = DiffusionVASPipeline.from_pretrained(
         model_path_rgb, dtype=torch.float16
-    ).to("cuda")
-    pipeline_rgb.enable_model_cpu_offload()
+    ).to(device)
     pipeline_rgb.set_progress_bar_config(disable=True)
 
     return pipeline_rgb
 
 
-def init_depth_model(model_path_depth, depth_encoder):
+def init_depth_model(model_path_depth, depth_encoder, device="cuda"):
 
     from models.Depth_Anything_V2.depth_anything_v2.dpt import DepthAnythingV2
 
@@ -48,7 +46,7 @@ def init_depth_model(model_path_depth, depth_encoder):
         'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]}
     }
 
-    depth_model = DepthAnythingV2(**depth_model_configs[depth_encoder]).to('cuda')
+    depth_model = DepthAnythingV2(**depth_model_configs[depth_encoder]).to(device)
     depth_model.load_state_dict(
         torch.load(model_path_depth))
     depth_model.eval()
