@@ -21,12 +21,13 @@ warnings.filterwarnings("ignore")
 def _compile_pipeline(pipeline):
     """Apply torch.compile to the UNet and VAE decoder for faster inference.
 
-    Uses max-autotune mode for best kernel selection while tolerating dynamic input shapes
-    (num_frames varies across batches). First call includes compilation overhead.
+    Uses default mode (no CUDA graphs) for compatibility with ThreadPoolExecutor.
+    max-autotune causes TLS assertion errors in multi-threaded CUDA graph trees.
+    First call includes compilation overhead; subsequent calls benefit from fused kernels.
     """
-    print("[COMPILE] Compiling UNet and VAE decoder with torch.compile (mode=max-autotune)...")
-    pipeline.unet = torch.compile(pipeline.unet, mode="max-autotune", fullgraph=False)
-    pipeline.vae.decoder = torch.compile(pipeline.vae.decoder, mode="max-autotune", fullgraph=False)
+    print("[COMPILE] Compiling UNet and VAE decoder with torch.compile (mode=default)...")
+    pipeline.unet = torch.compile(pipeline.unet, mode="default", fullgraph=False)
+    pipeline.vae.decoder = torch.compile(pipeline.vae.decoder, mode="default", fullgraph=False)
     return pipeline
 
 
