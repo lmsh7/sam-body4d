@@ -8,9 +8,11 @@ import matplotlib.pyplot as plt
 from PIL import Image
 
 
+import torch
 import torch.utils.checkpoint
 from torchvision import transforms
 
+from diffusers.models.attention_processor import AttnProcessor2_0
 from models.diffusion_vas.pipeline_diffusion_vas import DiffusionVASPipeline
 
 import warnings
@@ -22,6 +24,7 @@ def init_amodal_segmentation_model(model_path_mask, device="cuda"):
         model_path_mask, dtype=torch.float16
     ).to(device)
     pipeline_mask.set_progress_bar_config(disable=True)
+    pipeline_mask.unet.set_attn_processor(AttnProcessor2_0())
 
     return pipeline_mask
 
@@ -31,6 +34,7 @@ def init_rgb_model(model_path_rgb, device="cuda"):
         model_path_rgb, dtype=torch.float16
     ).to(device)
     pipeline_rgb.set_progress_bar_config(disable=True)
+    pipeline_rgb.unet.set_attn_processor(AttnProcessor2_0())
 
     return pipeline_rgb
 
