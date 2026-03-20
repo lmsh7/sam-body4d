@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from PIL import Image
 
 
+import torch
 import torch.utils.checkpoint
 from torchvision import transforms
 
@@ -17,20 +18,36 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-def init_amodal_segmentation_model(model_path_mask, device="cuda"):
+def _compile_pipeline(pipeline):
+    """Apply torch.compile to the UNet and VAE decoder for faster inference.
+
+    Uses max-autotune mode for best kernel selection while tolerating dynamic input shapes
+    (num_frames varies across batches). First call includes compilation overhead.
+    """
+    print("[COMPILE] Compiling UNet and VAE decoder with torch.compile (mode=max-autotune)...")
+    pipeline.unet = torch.compile(pipeline.unet, mode="max-autotune", fullgraph=False)
+    pipeline.vae.decoder = torch.compile(pipeline.vae.decoder, mode="max-autotune", fullgraph=False)
+    return pipeline
+
+
+def init_amodal_segmentation_model(model_path_mask, device="cuda", compile=True):
     pipeline_mask = DiffusionVASPipeline.from_pretrained(
         model_path_mask, dtype=torch.float16
     ).to(device)
     pipeline_mask.set_progress_bar_config(disable=True)
+    if compile:
+        _compile_pipeline(pipeline_mask)
 
     return pipeline_mask
 
 
-def init_rgb_model(model_path_rgb, device="cuda"):
+def init_rgb_model(model_path_rgb, device="cuda", compile=True):
     pipeline_rgb = DiffusionVASPipeline.from_pretrained(
         model_path_rgb, dtype=torch.float16
     ).to(device)
     pipeline_rgb.set_progress_bar_config(disable=True)
+    if compile:
+        _compile_pipeline(pipeline_rgb)
 
     return pipeline_rgb
 
