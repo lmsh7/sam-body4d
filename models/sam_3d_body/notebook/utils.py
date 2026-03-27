@@ -333,12 +333,12 @@ def aggregate_skeleton_npz(skeleton_dir: str):
         valid_mask = np.array([not d.get("empty", False) for d in frames_data])
         frame_names = [d.get("frame_id", jf[:-5]) for d, jf in zip(frames_data, json_files)]
 
-        # Determine shapes from first valid frame
+        # Determine shapes from max across all valid frames
         first_valid = next((d for d in frames_data if not d.get("empty", False)), None)
         if first_valid is None:
             continue
 
-        n_joints = len(first_valid["keypoints_3d"])
+        n_joints = max(len(d["keypoints_3d"]) for d in frames_data if not d.get("empty", False))
         kp3d = np.full((n, n_joints, 3), np.nan)
         kp2d = np.full((n, n_joints, 2), np.nan)
         jcoords = np.full((n, n_joints, 3), np.nan)
@@ -350,10 +350,11 @@ def aggregate_skeleton_npz(skeleton_dir: str):
         for i, d in enumerate(frames_data):
             if d.get("empty", False):
                 continue
-            kp3d[i] = d["keypoints_3d"]
+            nj = len(d["keypoints_3d"])
+            kp3d[i, :nj] = d["keypoints_3d"]
             kp2d_raw = np.array(d["keypoints_2d"])
-            kp2d[i] = kp2d_raw[:, :2] if kp2d_raw.shape[1] > 2 else kp2d_raw
-            jcoords[i] = d["joint_coords"]
+            kp2d[i, :nj] = kp2d_raw[:, :2] if kp2d_raw.shape[1] > 2 else kp2d_raw
+            jcoords[i, :nj] = d["joint_coords"]
             global_rot[i] = d["global_rot"]
             body_pose[i] = d["body_pose"]
             cam_t[i] = d["camera_translation"]
