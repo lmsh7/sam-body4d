@@ -3,6 +3,9 @@ Post-processing script for SAM-Body4D skeleton exports.
 Computes sports statistics (movement distance, velocity, joint angles) from
 exported skeleton data and outputs CSV files.
 
+Uses camera-compensated positioning (keypoints_3d + cam_t) to correctly
+capture translational movement even when the camera follows the subject.
+
 Usage:
     python scripts/export_sports_stats.py --input_dir outputs/<timestamp> --fps 30
 """
@@ -14,6 +17,12 @@ import os
 import glob
 import numpy as np
 from pathlib import Path
+
+try:
+    from scipy.ndimage import gaussian_filter1d
+    _HAS_SCIPY = True
+except ImportError:
+    _HAS_SCIPY = False
 
 # ---------------------------------------------------------------------------
 # MHR70 joint index constants
@@ -86,15 +95,49 @@ def load_person_data(person_dir: str) -> dict:
 
     n_joints = len(first_valid["keypoints_3d"])
     kp3d = np.full((n, n_joints, 3), np.nan)
+    cam_t = np.full((n, 3), np.nan)
     for i, d in enumerate(frames):
         if not d.get("empty", False):
             kp3d[i] = np.array(d["keypoints_3d"])
+            if "camera_translation" in d:
+                cam_t[i] = np.array(d["camera_translation"])
 
     return {
         "keypoints_3d": kp3d,
+        "camera_translation": cam_t,
         "valid_mask": valid_mask,
         "frame_names": frame_names,
     }
+
+
+# ---------------------------------------------------------------------------
+# Smoothing
+# ---------------------------------------------------------------------------
+def smooth_positions(positions: np.ndarray, valid: np.ndarray, sigma: float = 1.5) -> np.ndarray:
+    """Apply temporal smoothing to positions, bridging over invalid frames.
+
+    Uses Gaussian filter (scipy) or simple moving average (fallback).
+    """
+    smoothed = positions.copy()
+    valid_idx = np.where(valid)[0]
+    if len(valid_idx) < 2:
+        return positions
+
+    for axis in range(positions.shape[-1]):
+        col = positions[:, axis]
+        # Interpolate over invalid frames for filtering
+        col_interp = np.interp(np.arange(len(col)), valid_idx, col[valid_idx])
+        if _HAS_SCIPY:
+            col_smooth = gaussian_filter1d(col_interp, sigma=sigma)
+        else:
+            # Fallback: simple moving average with window ~= 4*sigma
+            w = max(3, int(4 * sigma) | 1)  # odd window
+            kernel = np.ones(w) / w
+            col_smooth = np.convolve(col_interp, kernel, mode="same")
+        smoothed[:, axis] = col_smooth
+
+    smoothed[~valid] = np.nan
+    return smoothed
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +146,19 @@ def load_person_data(person_dir: str) -> dict:
 def compute_hip_center(kp3d: np.ndarray) -> np.ndarray:
     """Compute hip center as midpoint of left and right hip. Shape: (N, 3)."""
     return (kp3d[:, LEFT_HIP, :] + kp3d[:, RIGHT_HIP, :]) / 2.0
+
+
+def compute_positioned_keypoints(
+    kp3d: np.ndarray, cam_t: np.ndarray, valid: np.ndarray, sigma: float = 1.5
+) -> np.ndarray:
+    """Compute camera-positioned keypoints: kp3d + smoothed(cam_t).
+
+    This places joints in the camera rendering frame, capturing both
+    body-internal motion and translational person movement — matching
+    what the model itself uses for 2D projection.
+    """
+    cam_t_smooth = smooth_positions(cam_t, valid, sigma=sigma)
+    return kp3d + cam_t_smooth[:, np.newaxis, :]
 
 
 def compute_cumulative_distance(positions: np.ndarray, valid: np.ndarray) -> np.ndarray:
@@ -191,6 +247,9 @@ PER_FRAME_HEADER = [
     "cumulative_distance_hip",
     "cumulative_distance_left_ankle",
     "cumulative_distance_right_ankle",
+    "cumulative_distance_hip_raw",
+    "cumulative_distance_left_ankle_raw",
+    "cumulative_distance_right_ankle_raw",
 ]
 
 SUMMARY_HEADER = [
@@ -198,10 +257,14 @@ SUMMARY_HEADER = [
     "total_distance_hip",
     "total_distance_left_ankle",
     "total_distance_right_ankle",
+    "total_distance_hip_raw",
+    "total_distance_left_ankle_raw",
+    "total_distance_right_ankle_raw",
     "avg_velocity_hip",
     "max_velocity_hip",
     "total_frames",
     "valid_frames",
+    "camera_compensated",
 ]
 
 
@@ -211,6 +274,8 @@ def _fmt(v):
         return ""
     if isinstance(v, (np.floating, float)):
         return f"{v:.6f}"
+    if isinstance(v, (bool, np.bool_)):
+        return str(v)
     return str(v)
 
 
@@ -225,25 +290,45 @@ def process_person(person_id: str, person_dir: str, fps: float) -> tuple:
     frame_names = data["frame_names"]
     n = len(kp3d)
 
-    # Positions
-    hip_center = compute_hip_center(kp3d)
-    left_ankle = kp3d[:, LEFT_ANKLE, :]
-    right_ankle = kp3d[:, RIGHT_ANKLE, :]
+    # Check if camera compensation is available
+    cam_t = data.get("camera_translation")
+    has_cam = (
+        cam_t is not None
+        and cam_t.shape == (n, 3)
+        and not np.all(np.isnan(cam_t[valid]))
+    )
 
-    # Distances
-    cum_dist_hip = compute_cumulative_distance(hip_center, valid)
-    cum_dist_la = compute_cumulative_distance(left_ankle, valid)
-    cum_dist_ra = compute_cumulative_distance(right_ankle, valid)
+    # Raw (body-relative) positions
+    hip_raw = compute_hip_center(kp3d)
+    la_raw = kp3d[:, LEFT_ANKLE, :]
+    ra_raw = kp3d[:, RIGHT_ANKLE, :]
 
-    # Velocities
-    vel_hip = compute_velocity(hip_center, valid, fps)
-    vel_la = compute_velocity(left_ankle, valid, fps)
-    vel_ra = compute_velocity(right_ankle, valid, fps)
+    # Primary positions: camera-compensated or raw fallback
+    if has_cam:
+        kp3d_pos = compute_positioned_keypoints(kp3d, cam_t, valid)
+        hip_pos = compute_hip_center(kp3d_pos)
+        la_pos = kp3d_pos[:, LEFT_ANKLE, :]
+        ra_pos = kp3d_pos[:, RIGHT_ANKLE, :]
+    else:
+        hip_pos = hip_raw
+        la_pos = la_raw
+        ra_pos = ra_raw
 
-    # Acceleration
+    # Primary metrics: positioned
+    cum_dist_hip = compute_cumulative_distance(hip_pos, valid)
+    cum_dist_la = compute_cumulative_distance(la_pos, valid)
+    cum_dist_ra = compute_cumulative_distance(ra_pos, valid)
+    vel_hip = compute_velocity(hip_pos, valid, fps)
+    vel_la = compute_velocity(la_pos, valid, fps)
+    vel_ra = compute_velocity(ra_pos, valid, fps)
     acc_hip = compute_acceleration(vel_hip, valid, fps)
 
-    # Joint angles
+    # Raw metrics (for comparison)
+    cum_dist_hip_raw = compute_cumulative_distance(hip_raw, valid)
+    cum_dist_la_raw = compute_cumulative_distance(la_raw, valid)
+    cum_dist_ra_raw = compute_cumulative_distance(ra_raw, valid)
+
+    # Joint angles (translation-invariant, use raw kp3d)
     angles = compute_joint_angles(kp3d, valid)
 
     # Build per-frame rows
@@ -251,13 +336,14 @@ def process_person(person_id: str, person_dir: str, fps: float) -> tuple:
     for t in range(n):
         rows.append([
             person_id, t, frame_names[t],
-            hip_center[t, 0], hip_center[t, 1], hip_center[t, 2],
+            hip_pos[t, 0], hip_pos[t, 1], hip_pos[t, 2],
             vel_hip[t], acc_hip[t],
             vel_la[t], vel_ra[t],
             angles["left_knee_angle"][t], angles["right_knee_angle"][t],
             angles["left_elbow_angle"][t], angles["right_elbow_angle"][t],
             angles["left_hip_angle"][t], angles["right_hip_angle"][t],
             cum_dist_hip[t], cum_dist_la[t], cum_dist_ra[t],
+            cum_dist_hip_raw[t], cum_dist_la_raw[t], cum_dist_ra_raw[t],
         ])
 
     # Summary
@@ -267,10 +353,14 @@ def process_person(person_id: str, person_dir: str, fps: float) -> tuple:
         cum_dist_hip[-1] if n > 0 else 0.0,
         cum_dist_la[-1] if n > 0 else 0.0,
         cum_dist_ra[-1] if n > 0 else 0.0,
+        cum_dist_hip_raw[-1] if n > 0 else 0.0,
+        cum_dist_la_raw[-1] if n > 0 else 0.0,
+        cum_dist_ra_raw[-1] if n > 0 else 0.0,
         np.mean(valid_vel) if len(valid_vel) > 0 else np.nan,
         np.max(valid_vel) if len(valid_vel) > 0 else np.nan,
         n,
         int(valid.sum()),
+        has_cam,
     ]
 
     return rows, summary
@@ -343,13 +433,20 @@ def main():
     # Print summary to console
     print("\n=== Sports Statistics Summary ===")
     for s in all_summaries:
-        print(f"\nPerson {s[0]}:")
-        print(f"  Total distance (hip center): {s[1]:.4f}")
-        print(f"  Total distance (left ankle): {s[2]:.4f}")
-        print(f"  Total distance (right ankle): {s[3]:.4f}")
-        print(f"  Avg velocity (hip): {s[4]:.4f}" if not np.isnan(s[4]) else "  Avg velocity (hip): N/A")
-        print(f"  Max velocity (hip): {s[5]:.4f}" if not np.isnan(s[5]) else "  Max velocity (hip): N/A")
-        print(f"  Frames: {s[7]}/{s[6]} valid")
+        mode = "camera-compensated" if s[11] else "body-relative (no cam_t)"
+        print(f"\nPerson {s[0]} ({mode}):")
+        print(f"  Total distance (hip center):  {s[1]:.4f}  (raw: {s[4]:.4f})")
+        print(f"  Total distance (left ankle):  {s[2]:.4f}  (raw: {s[5]:.4f})")
+        print(f"  Total distance (right ankle): {s[3]:.4f}  (raw: {s[6]:.4f})")
+        if not np.isnan(s[7]):
+            print(f"  Avg velocity (hip): {s[7]:.4f}")
+        else:
+            print("  Avg velocity (hip): N/A")
+        if not np.isnan(s[8]):
+            print(f"  Max velocity (hip): {s[8]:.4f}")
+        else:
+            print("  Max velocity (hip): N/A")
+        print(f"  Frames: {s[10]}/{s[9]} valid")
 
 
 if __name__ == "__main__":
