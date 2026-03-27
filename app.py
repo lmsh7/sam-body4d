@@ -30,7 +30,7 @@ from omegaconf import OmegaConf
 from utils import draw_point_marker, mask_painter, images_to_mp4, DAVIS_PALETTE, jpg_folder_to_mp4, is_super_long_or_wide, keep_largest_component, is_skinny_mask, bbox_from_mask, gpu_profile, resize_mask_with_unique_label
 
 from models.sam_3d_body.sam_3d_body import load_sam_3d_body, SAM3DBodyEstimator
-from models.sam_3d_body.notebook.utils import process_image_with_mask, save_mesh_results
+from models.sam_3d_body.notebook.utils import process_image_with_mask, save_mesh_results, save_skeleton_results, aggregate_skeleton_npz
 from models.sam_3d_body.tools.vis_utils import visualize_sample_together, visualize_sample
 from models.diffusion_vas.demo import init_amodal_segmentation_model, init_rgb_model, init_depth_model, load_and_transform_masks, load_and_transform_rgbs, rgb_to_depth
 
@@ -111,23 +111,21 @@ def build_sam3_3d_body_config(cfg, device=None):
 def _assign_gpu_devices(num_workers):
     """Assign GPU devices for multi-GPU pipeline.
 
-    GPU layout (when >= 4 GPUs available):
-        GPU 0: SAM-3 (video segmentation) + depth_model
-        GPU 1: diffusion worker 0 (pipeline_mask + pipeline_rgb)
-        GPU 2: diffusion worker 1 (pipeline_mask + pipeline_rgb)
-        GPU 3: SAM 3D Body (HMR) + FOV estimator
+    All GPUs host diffusion workers. Depth model and HMR share GPU 0 and
+    GPU (n-1) respectively — they run before/after diffusion, never concurrently,
+    so sharing is safe and maximizes diffusion parallelism.
 
-    Falls back gracefully when fewer GPUs are available.
+    GPU layout (4 GPUs, 2 obj_ids):
+        GPU 0: diffusion worker 0 + depth_model (sequential, not concurrent)
+        GPU 1: diffusion worker 1
+        GPU 2: (idle for 2 objs, used when obj_ids >= 3)
+        GPU 3: (idle for 2 objs) + SAM 3D Body (HMR) after diffusion completes
     """
     n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
-    if n_gpus >= 4:
-        depth_device = torch.device("cuda:0")
-        worker_devices = [torch.device(f"cuda:{1 + i % (n_gpus - 2)}") for i in range(num_workers)]
-        hmr_device = torch.device(f"cuda:{n_gpus - 1}")
-    elif n_gpus >= 2:
+    if n_gpus >= 2:
         depth_device = torch.device("cuda:0")
         worker_devices = [torch.device(f"cuda:{i % n_gpus}") for i in range(num_workers)]
-        hmr_device = torch.device("cuda:0")
+        hmr_device = torch.device(f"cuda:{n_gpus - 1}")
     else:
         depth_device = torch.device("cuda") if n_gpus > 0 else torch.device("cpu")
         worker_devices = [depth_device] * num_workers
@@ -186,6 +184,7 @@ def init_runtime(config_path: str = os.path.join(ROOT, "configs", "body4d.yaml")
     RUNTIME['batch_size'] = CONFIG.sam_3d_body.get('batch_size', 1)
     RUNTIME['detection_resolution'] = CONFIG.completion.get('detection_resolution', [256, 512])
     RUNTIME['completion_resolution'] = CONFIG.completion.get('completion_resolution', [512, 1024])
+    RUNTIME['smpl_export'] = CONFIG.runtime.get('smpl_export', False)
 
 # ===============================
 # Paths & supported formats
@@ -981,6 +980,8 @@ def on_4d_generation(video_path: str):
         os.makedirs(f"{OUTPUT_DIR}/mesh_4d_individual/{obj_id}", exist_ok=True)
         os.makedirs(f"{OUTPUT_DIR}/focal_4d_individual/{obj_id}", exist_ok=True)
         os.makedirs(f"{OUTPUT_DIR}/rendered_frames_individual/{obj_id}", exist_ok=True)
+        if RUNTIME.get('smpl_export', False):
+            os.makedirs(f"{OUTPUT_DIR}/skeleton_4d_individual/{obj_id}", exist_ok=True)
 
     batch_size = RUNTIME['batch_size']
     n = len(images_list)
@@ -1095,8 +1096,18 @@ def on_4d_generation(video_path: str):
                 image_path=image_path,
                 id_current=id_current,
             )
+            if RUNTIME.get('smpl_export', False):
+                save_skeleton_results(
+                    outputs=mask_output,
+                    skeleton_dir=f"{OUTPUT_DIR}/skeleton_4d_individual",
+                    image_path=image_path,
+                    id_current=id_current,
+                )
 
         print(f"  [TIMER] batch {i//batch_size} total: {time.time() - _t_batch_start:.2f}s")
+
+    if RUNTIME.get('smpl_export', False):
+        aggregate_skeleton_npz(f"{OUTPUT_DIR}/skeleton_4d_individual")
 
     out_4d_path = os.path.join(OUTPUT_DIR, f"4d_{time.time():.0f}.mp4")
     jpg_folder_to_mp4(f"{OUTPUT_DIR}/rendered_frames", out_4d_path, fps=RUNTIME['video_fps'])

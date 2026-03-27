@@ -12,7 +12,7 @@ import torch
 import json
 
 from sam_3d_body import load_sam_3d_body_hf, SAM3DBodyEstimator
-from sam_3d_body.metadata.mhr70 import pose_info as mhr70_pose_info
+from sam_3d_body.metadata.mhr70 import pose_info as mhr70_pose_info, mhr_names
 from sam_3d_body.visualization.renderer import Renderer
 from sam_3d_body.visualization.skeleton_visualizer import SkeletonVisualizer
 
@@ -239,6 +239,138 @@ def save_mesh_results(
         focal_length = {'focal_length': person_output["focal_length"].item(), 'camera': [float(x) for x in person_output['pred_cam_t']]}
         with open(f"{focal_dir}/{pid+1}/{os.path.basename(image_path)[:-4]}.json", "w") as f:
             json.dump(focal_length, f, indent=4)
+
+
+# 18 main body joint indices for rotation export (reduce JSON size)
+_BODY_JOINT_INDICES = [
+    0, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18, 20, 41, 62, 69,
+]
+
+
+def _to_list(v):
+    """Convert numpy/torch value to JSON-serializable Python list or scalar."""
+    if v is None:
+        return None
+    if isinstance(v, (np.ndarray, np.generic)):
+        return v.tolist()
+    if isinstance(v, torch.Tensor):
+        return v.detach().cpu().numpy().tolist()
+    return v
+
+
+def save_skeleton_results(
+    outputs: Optional[List[Dict[str, Any]]],
+    skeleton_dir: str,
+    image_path: str,
+    id_current: Optional[List],
+):
+    """Save per-frame skeleton/joint data as JSON for sports analytics."""
+    frame_name = os.path.basename(image_path)[:-4]
+
+    if outputs is None or id_current is None:
+        # Write empty stub for each known subdirectory
+        for sub in sorted(os.listdir(skeleton_dir)):
+            sub_path = os.path.join(skeleton_dir, sub)
+            if os.path.isdir(sub_path):
+                with open(os.path.join(sub_path, f"{frame_name}.json"), "w") as f:
+                    json.dump({"empty": True, "frame_id": frame_name}, f)
+        return
+
+    joint_names = [n.replace("-", "_") for n in mhr_names]
+
+    for pid, person_output in enumerate(outputs):
+        # Extract rotation matrices for main body joints only
+        global_rots = person_output.get("pred_global_rots")
+        body_rotations = None
+        if global_rots is not None:
+            body_rotations = {
+                joint_names[ji]: _to_list(global_rots[ji])
+                for ji in _BODY_JOINT_INDICES
+                if ji < len(joint_names)
+            }
+
+        skeleton_data = {
+            "frame_id": frame_name,
+            "joint_names": joint_names,
+            "keypoints_3d": _to_list(person_output["pred_keypoints_3d"]),
+            "keypoints_2d": _to_list(person_output["pred_keypoints_2d"]),
+            "joint_coords": _to_list(person_output["pred_joint_coords"]),
+            "body_joint_rotations": body_rotations,
+            "global_rot": _to_list(person_output["global_rot"]),
+            "body_pose": _to_list(person_output["body_pose_params"]),
+            "hand_pose": _to_list(person_output["hand_pose_params"]),
+            "shape": _to_list(person_output["shape_params"]),
+            "scale": _to_list(person_output["scale_params"]),
+            "camera_translation": _to_list(person_output["pred_cam_t"]),
+            "focal_length": _to_list(person_output["focal_length"]),
+            "bbox": _to_list(person_output["bbox"]),
+        }
+
+        out_path = f"{skeleton_dir}/{pid+1}/{frame_name}.json"
+        with open(out_path, "w") as f:
+            json.dump(skeleton_data, f)
+
+
+def aggregate_skeleton_npz(skeleton_dir: str):
+    """Aggregate per-frame skeleton JSONs into a single NPZ per person."""
+    for person_sub in sorted(os.listdir(skeleton_dir)):
+        person_dir = os.path.join(skeleton_dir, person_sub)
+        if not os.path.isdir(person_dir):
+            continue
+
+        json_files = sorted(
+            f for f in os.listdir(person_dir) if f.endswith(".json")
+        )
+        if not json_files:
+            continue
+
+        frames_data = []
+        for jf in json_files:
+            with open(os.path.join(person_dir, jf)) as f:
+                frames_data.append(json.load(f))
+
+        n = len(frames_data)
+        valid_mask = np.array([not d.get("empty", False) for d in frames_data])
+        frame_names = [d.get("frame_id", jf[:-5]) for d, jf in zip(frames_data, json_files)]
+
+        # Determine shapes from first valid frame
+        first_valid = next((d for d in frames_data if not d.get("empty", False)), None)
+        if first_valid is None:
+            continue
+
+        n_joints = len(first_valid["keypoints_3d"])
+        kp3d = np.full((n, n_joints, 3), np.nan)
+        kp2d = np.full((n, n_joints, 2), np.nan)
+        jcoords = np.full((n, n_joints, 3), np.nan)
+        global_rot = np.full((n, 3), np.nan)
+        body_pose = np.full((n, len(first_valid["body_pose"])), np.nan)
+        cam_t = np.full((n, 3), np.nan)
+        focal = np.full((n,), np.nan)
+
+        for i, d in enumerate(frames_data):
+            if d.get("empty", False):
+                continue
+            kp3d[i] = d["keypoints_3d"]
+            kp2d_raw = np.array(d["keypoints_2d"])
+            kp2d[i] = kp2d_raw[:, :2] if kp2d_raw.shape[1] > 2 else kp2d_raw
+            jcoords[i] = d["joint_coords"]
+            global_rot[i] = d["global_rot"]
+            body_pose[i] = d["body_pose"]
+            cam_t[i] = d["camera_translation"]
+            focal[i] = d["focal_length"]
+
+        np.savez_compressed(
+            os.path.join(person_dir, "all_frames.npz"),
+            keypoints_3d=kp3d,
+            keypoints_2d=kp2d,
+            joint_coords=jcoords,
+            global_rot=global_rot,
+            body_pose=body_pose,
+            camera_translation=cam_t,
+            focal_length=focal,
+            frame_names=np.array(frame_names),
+            valid_mask=valid_mask,
+        )
 
 
 def display_results_grid(

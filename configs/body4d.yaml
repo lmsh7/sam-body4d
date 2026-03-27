@@ -26,6 +26,7 @@ sam_3d_body:
 
 runtime:
   output_dir: ./outputs
+  smpl_export: false
 
 completion:
   enable: true
