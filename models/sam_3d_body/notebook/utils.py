@@ -338,25 +338,30 @@ def aggregate_skeleton_npz(skeleton_dir: str):
         if first_valid is None:
             continue
 
-        n_joints = max(len(d["keypoints_3d"]) for d in frames_data if not d.get("empty", False))
-        kp3d = np.full((n, n_joints, 3), np.nan)
-        kp2d = np.full((n, n_joints, 2), np.nan)
-        jcoords = np.full((n, n_joints, 3), np.nan)
+        valid_frames = [d for d in frames_data if not d.get("empty", False)]
+        n_kp = max(len(d["keypoints_3d"]) for d in valid_frames)
+        n_jc = max(len(d["joint_coords"]) for d in valid_frames)
+        n_bp = max(len(d["body_pose"]) for d in valid_frames)
+        kp3d = np.full((n, n_kp, 3), np.nan)
+        kp2d = np.full((n, n_kp, 2), np.nan)
+        jcoords = np.full((n, n_jc, 3), np.nan)
         global_rot = np.full((n, 3), np.nan)
-        body_pose = np.full((n, len(first_valid["body_pose"])), np.nan)
+        body_pose = np.full((n, n_bp), np.nan)
         cam_t = np.full((n, 3), np.nan)
         focal = np.full((n,), np.nan)
 
         for i, d in enumerate(frames_data):
             if d.get("empty", False):
                 continue
-            nj = len(d["keypoints_3d"])
-            kp3d[i, :nj] = d["keypoints_3d"]
+            nk = len(d["keypoints_3d"])
+            kp3d[i, :nk] = d["keypoints_3d"]
             kp2d_raw = np.array(d["keypoints_2d"])
-            kp2d[i, :nj] = kp2d_raw[:, :2] if kp2d_raw.shape[1] > 2 else kp2d_raw
-            jcoords[i, :nj] = d["joint_coords"]
+            kp2d[i, :nk] = kp2d_raw[:, :2] if kp2d_raw.shape[1] > 2 else kp2d_raw
+            njc = len(d["joint_coords"])
+            jcoords[i, :njc] = d["joint_coords"]
             global_rot[i] = d["global_rot"]
-            body_pose[i] = d["body_pose"]
+            nbp = len(d["body_pose"])
+            body_pose[i, :nbp] = d["body_pose"]
             cam_t[i] = d["camera_translation"]
             focal[i] = d["focal_length"]
 
