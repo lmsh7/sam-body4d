@@ -227,15 +227,9 @@ class MHRHead(nn.Module):
             model_params[:, self.nonhand_param_idxs] = 0
 
         if self.skip_correctives:
-            try:
-                curr_skinned_verts, curr_skel_state = self.mhr(
-                    shape_params, model_params, expr_params, skip_correctives=True
-                )
-            except TypeError:
-                # MHR model does not support skip_correctives, fall back
-                curr_skinned_verts, curr_skel_state = self.mhr(
-                    shape_params, model_params, expr_params
-                )
+            curr_skinned_verts, curr_skel_state = self.mhr(
+                shape_params, model_params, expr_params, apply_correctives=False
+            )
         else:
             curr_skinned_verts, curr_skel_state = self.mhr(
                 shape_params, model_params, expr_params
