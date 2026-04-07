@@ -7,9 +7,9 @@ from .utils.config import get_config
 from .utils.checkpoint import load_state_dict
 
 
-def load_sam_3d_body(checkpoint_path: str = "", device: str = "cuda", mhr_path: str = ""):
+def load_sam_3d_body(checkpoint_path: str = "", device: str = "cuda", mhr_path: str = "", fast_cfg=None):
     print("Loading SAM 3D Body model...")
-    
+
     # Check the current directory, and if not present check the parent dir.
     model_cfg = os.path.join(os.path.dirname(checkpoint_path), "model_config.yaml")
     if not os.path.exists(model_cfg):
@@ -37,6 +37,11 @@ def load_sam_3d_body(checkpoint_path: str = "", device: str = "cuda", mhr_path: 
 
     model = model.to(device)
     model.eval()
+
+    # Apply Fast-SAM-3D-Body optimizations if configured
+    if fast_cfg and fast_cfg.get("enable", False):
+        model.apply_fast_optimizations(fast_cfg)
+
     return model, model_cfg
 
 

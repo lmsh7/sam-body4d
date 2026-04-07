@@ -87,10 +87,11 @@ def build_sam3_from_config(cfg):
 def build_sam3_3d_body_config(cfg, device=None):
     mhr_path = cfg.sam_3d_body['mhr_path']
     fov_path = cfg.sam_3d_body['fov_path']
+    fast_cfg = cfg.sam_3d_body.get('fast_mode', None)
     if device is None:
         device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     model, model_cfg = load_sam_3d_body(
-        cfg.sam_3d_body['ckpt_path'], device=device, mhr_path=mhr_path
+        cfg.sam_3d_body['ckpt_path'], device=device, mhr_path=mhr_path, fast_cfg=fast_cfg
     )
 
     human_detector, human_segmentor, fov_estimator = None, None, None

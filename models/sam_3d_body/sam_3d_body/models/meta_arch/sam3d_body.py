@@ -48,6 +48,8 @@ KEY_RIGHT_HAND = list(range(21, 42))
 
 class SAM3DBody(BaseModel):
     pelvis_idx = [9, 10]  # left_hip, right_hip
+    _fast_batch_hands = False  # Phase 5: merge left+right hand backbone
+    decoder_dtype = None  # Phase 6: mixed precision decoder
 
     def _initialze_model(self):
         self.register_buffer(
@@ -247,6 +249,58 @@ class SAM3DBody(BaseModel):
             num_fcs=2,
             add_identity=False,
         )
+
+    def apply_fast_optimizations(self, fast_cfg):
+        """Apply Fast-SAM-3D-Body optimizations based on configuration."""
+        print("[SAM3DBody] Applying fast mode optimizations...")
+
+        # Phase 1: torch.compile backbone
+        if fast_cfg.get("compile_backbone", False):
+            self.backbone.apply_compile()
+
+        # Phase 2: torch.compile decoder layers
+        if fast_cfg.get("compile_decoder", False):
+            self._compile_decoders()
+
+        # Phase 3: Decoder layer pruning
+        body_layers = fast_cfg.get("body_interm_layers", None)
+        if body_layers is not None:
+            self.decoder.active_interm_layers = set(body_layers)
+            print(f"  body decoder: active interm layers = {sorted(self.decoder.active_interm_layers)}")
+        hand_layers = fast_cfg.get("hand_interm_layers", None)
+        if hand_layers is not None:
+            self.decoder_hand.active_interm_layers = set(hand_layers)
+            print(f"  hand decoder: active interm layers = {sorted(self.decoder_hand.active_interm_layers)}")
+
+        # Phase 4: MHR skip correctives
+        if fast_cfg.get("skip_correctives", False):
+            self.head_pose.skip_correctives = True
+            self.head_pose_hand.skip_correctives = True
+            print("  MHR: skip_correctives = True")
+
+        # Phase 5: batch hands flag (used in run_inference_batch)
+        self._fast_batch_hands = fast_cfg.get("batch_hands", False)
+        if self._fast_batch_hands:
+            print("  batch_hands: enabled (merged left+right backbone)")
+
+        # Phase 6: mixed precision decoder
+        layer_dtype = fast_cfg.get("layer_dtype", "fp32")
+        if layer_dtype in ("bf16", "bfloat16"):
+            self.decoder_dtype = torch.bfloat16
+            print(f"  decoder dtype: bfloat16")
+        elif layer_dtype in ("fp16", "float16"):
+            self.decoder_dtype = torch.float16
+            print(f"  decoder dtype: float16")
+        else:
+            self.decoder_dtype = None
+
+        print("[SAM3DBody] Fast mode optimizations applied.")
+
+    def _compile_decoders(self, mode="reduce-overhead"):
+        """torch.compile individual decoder layers."""
+        print(f"  Compiling decoder layers (mode={mode})...")
+        self.decoder.apply_compile(mode)
+        self.decoder_hand.apply_compile(mode)
 
     def _get_decoder_condition(self, batch: Dict) -> Optional[torch.Tensor]:
         num_person = batch["img"].shape[1]
@@ -1216,6 +1270,88 @@ class SAM3DBody(BaseModel):
 
         return output
 
+    def _run_backbone_only(self, batch: Dict):
+        """Run backbone + ray conditioning, return image embeddings.
+
+        Used by Phase 5 (batch_hands) to share backbone across left+right hands.
+        """
+        x = self.data_preprocess(
+            self._flatten_person(batch["img"]),
+            crop_width=(
+                self.cfg.MODEL.BACKBONE.TYPE
+                in ["vit_hmr", "vit", "vit_b", "vit_l", "vit_hmr_512_384"]
+            ),
+        )
+
+        ray_cond = self.get_ray_condition(batch)
+        ray_cond = self._flatten_person(ray_cond)
+        if self.cfg.MODEL.BACKBONE.TYPE in ["vit_hmr", "vit", "vit_b", "vit_l"]:
+            ray_cond = ray_cond[:, :, :, 32:-32]
+        elif self.cfg.MODEL.BACKBONE.TYPE in ["vit_hmr_512_384"]:
+            ray_cond = ray_cond[:, :, :, 64:-64]
+
+        image_embeddings = self.backbone(
+            x.type(self.backbone_dtype), extra_embed=ray_cond
+        )
+        if isinstance(image_embeddings, tuple):
+            image_embeddings = image_embeddings[-1]
+        image_embeddings = image_embeddings.type(x.dtype)
+
+        # Mask condition
+        if self.cfg.MODEL.PROMPT_ENCODER.get("MASK_EMBED_TYPE", None) is not None:
+            if self.cfg.MODEL.PROMPT_ENCODER.get("MASK_PROMPT", "v1") == "v1":
+                mask_embeddings = self._get_mask_prompt(batch, image_embeddings)
+                image_embeddings = image_embeddings + mask_embeddings
+
+        return image_embeddings, ray_cond
+
+    def _run_hand_decoder_only(self, batch: Dict, image_embeddings, kps_batch=None):
+        """Run hand decoder given pre-computed image embeddings.
+
+        Used by Phase 5 (batch_hands) after shared backbone call.
+        """
+        batch_size, num_person = batch["img"].shape[:2]
+        self.hand_batch_idx = list(range(batch_size * num_person))
+        self.body_batch_idx = []
+
+        ray_cond = self.get_ray_condition(batch)
+        ray_cond = self._flatten_person(ray_cond)
+        if self.cfg.MODEL.BACKBONE.TYPE in ["vit_hmr", "vit", "vit_b", "vit_l"]:
+            ray_cond = ray_cond[:, :, :, 32:-32]
+        elif self.cfg.MODEL.BACKBONE.TYPE in ["vit_hmr_512_384"]:
+            ray_cond = ray_cond[:, :, :, 64:-64]
+        batch["ray_cond_hand"] = ray_cond[self.hand_batch_idx].clone()
+
+        condition_info = self._get_decoder_condition(batch)
+
+        keypoints_prompt = torch.zeros((batch_size * num_person, 1, 3)).to(batch["img"])
+        keypoints_prompt[:, :, -1] = -2
+
+        tokens_output_hand, pose_output_hand = self.forward_decoder_hand(
+            image_embeddings[self.hand_batch_idx],
+            init_estimate=None,
+            keypoints=keypoints_prompt[self.hand_batch_idx],
+            prev_estimate=None,
+            condition_info=condition_info[self.hand_batch_idx],
+            batch=batch,
+        )
+        pose_output_hand = pose_output_hand[-1]
+
+        output = {
+            "mhr": None,
+            "mhr_hand": pose_output_hand,
+            "condition_info": condition_info,
+            "image_embeddings": image_embeddings,
+        }
+
+        if self.cfg.MODEL.DECODER.get("DO_HAND_DETECT_TOKENS", False):
+            hand_coords_hand_batch = self.bbox_embed(tokens_output_hand).sigmoid()
+            hand_logits_hand_batch = self.hand_cls_embed(tokens_output_hand)
+            output["mhr_hand"]["hand_box"] = hand_coords_hand_batch
+            output["mhr_hand"]["hand_logits"] = hand_logits_hand_batch
+
+        return output
+
     def forward_step(
         self, batch: Dict, decoder_type: str = "body", kps_batch = None
     ) -> Tuple[Dict, Dict]:
@@ -1775,36 +1911,9 @@ class SAM3DBody(BaseModel):
         batch_lhand_dict['bbox_format'] = batch_lhand_list[0]['bbox_format']
         batch_lhand = recursive_to(batch_lhand_dict, batch["img"].device)
 
-        lhand_output = self.forward_step(batch_lhand, decoder_type="hand")
-
-        # Unflip output
-        ## Flip scale
-        ### Get MHR values
-        scale_r_hands_mean = self.head_pose.scale_mean[8].item()
-        scale_l_hands_mean = self.head_pose.scale_mean[9].item()
-        scale_r_hands_std = self.head_pose.scale_comps[8, 8].item()
-        scale_l_hands_std = self.head_pose.scale_comps[9, 9].item()
-        ### Apply
-        lhand_output["mhr_hand"]["scale"][:, 9] = (
-            (
-                scale_r_hands_mean
-                + scale_r_hands_std * lhand_output["mhr_hand"]["scale"][:, 8]
-            )
-            - scale_l_hands_mean
-        ) / scale_l_hands_std
-        ## Get the right hand global rotation, flip it, put it in as left.
-        lhand_output["mhr_hand"]["joint_global_rots"][:, 78] = lhand_output["mhr_hand"][
-            "joint_global_rots"
-        ][:, 42].clone()
-        lhand_output["mhr_hand"]["joint_global_rots"][:, 78, [1, 2], :] *= -1
-        ### Flip hand pose
-        lhand_output["mhr_hand"]["hand"][:, :54] = lhand_output["mhr_hand"]["hand"][
-            :, 54:
-        ]
-        ### Unflip box
-        batch_lhand["bbox_center"][:, :, 0] = (
-            width - batch_lhand["bbox_center"][:, :, 0] - 1
-        )
+        if not getattr(self, '_fast_batch_hands', False):
+            lhand_output = self.forward_step(batch_lhand, decoder_type="hand")
+        # else: deferred to batched path after batch_rhand is built
 
         ## Right...
         batch_rhand_list = []
@@ -1840,7 +1949,61 @@ class SAM3DBody(BaseModel):
             batch_rhand_dict[k] = torch.concat(v, dim=0)
         batch_rhand_dict['bbox_format'] = batch_rhand_list[0]['bbox_format']
         batch_rhand = recursive_to(batch_rhand_dict, batch["img"].device)
-        rhand_output = self.forward_step(batch_rhand, decoder_type="hand")
+
+        if getattr(self, '_fast_batch_hands', False):
+            # Phase 5: Merged backbone for left+right hands
+            # Concatenate images along the flattened batch dimension, run backbone once
+            lhand_flat = self._flatten_person(batch_lhand["img"])
+            rhand_flat = self._flatten_person(batch_rhand["img"])
+            merged_img_batch = {
+                "img": torch.cat([batch_lhand["img"], batch_rhand["img"]], dim=0),
+            }
+            # Copy fields needed by _run_backbone_only from lhand (both have same spatial dims)
+            for k in ("ori_img_size", "img_size", "affine_trans", "bbox_center", "bbox_scale"):
+                if k in batch_lhand:
+                    merged_img_batch[k] = torch.cat([batch_lhand[k], batch_rhand[k]], dim=0)
+            if "mask" in batch_lhand and batch_lhand["mask"] is not None:
+                merged_img_batch["mask"] = torch.cat([batch_lhand["mask"], batch_rhand["mask"]], dim=0)
+            merged_img_batch["cam_int"] = batch_lhand.get("cam_int", batch.get("cam_int"))
+
+            merged_embeddings, _ = self._run_backbone_only(merged_img_batch)
+
+            n_lhand = lhand_flat.shape[0]
+            lhand_embeddings = merged_embeddings[:n_lhand]
+            rhand_embeddings = merged_embeddings[n_lhand:]
+
+            # Run hand decoder separately with pre-computed embeddings
+            lhand_output = self._run_hand_decoder_only(batch_lhand, lhand_embeddings)
+            rhand_output = self._run_hand_decoder_only(batch_rhand, rhand_embeddings)
+        else:
+            rhand_output = self.forward_step(batch_rhand, decoder_type="hand")
+
+        # Unflip lhand output
+        ## Flip scale
+        scale_r_hands_mean = self.head_pose.scale_mean[8].item()
+        scale_l_hands_mean = self.head_pose.scale_mean[9].item()
+        scale_r_hands_std = self.head_pose.scale_comps[8, 8].item()
+        scale_l_hands_std = self.head_pose.scale_comps[9, 9].item()
+        lhand_output["mhr_hand"]["scale"][:, 9] = (
+            (
+                scale_r_hands_mean
+                + scale_r_hands_std * lhand_output["mhr_hand"]["scale"][:, 8]
+            )
+            - scale_l_hands_mean
+        ) / scale_l_hands_std
+        ## Get the right hand global rotation, flip it, put it in as left.
+        lhand_output["mhr_hand"]["joint_global_rots"][:, 78] = lhand_output["mhr_hand"][
+            "joint_global_rots"
+        ][:, 42].clone()
+        lhand_output["mhr_hand"]["joint_global_rots"][:, 78, [1, 2], :] *= -1
+        ## Flip hand pose
+        lhand_output["mhr_hand"]["hand"][:, :54] = lhand_output["mhr_hand"]["hand"][
+            :, 54:
+        ]
+        ## Unflip box
+        batch_lhand["bbox_center"][:, :, 0] = (
+            width - batch_lhand["bbox_center"][:, :, 0] - 1
+        )
 
         # Step 3. replace hand pose estimation from the body decoder.
         ## CRITERIA 1: LOCAL WRIST POSE DIFFERENCE

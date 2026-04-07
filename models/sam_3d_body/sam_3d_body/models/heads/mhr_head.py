@@ -119,6 +119,8 @@ class MHRHead(nn.Module):
         for param in self.mhr.parameters():
             param.requires_grad = False
 
+        self.skip_correctives = False
+
     def get_zero_pose_init(self, factor=1.0):
         # Initialize pose token with zero-initialized learnable params
         # Note: bias/initial value should be zero-pose in cont, not all-zeros
@@ -224,9 +226,20 @@ class MHRHead(nn.Module):
             # Zero out non-hand parameters
             model_params[:, self.nonhand_param_idxs] = 0
 
-        curr_skinned_verts, curr_skel_state = self.mhr(
-            shape_params, model_params, expr_params
-        )
+        if self.skip_correctives:
+            try:
+                curr_skinned_verts, curr_skel_state = self.mhr(
+                    shape_params, model_params, expr_params, skip_correctives=True
+                )
+            except TypeError:
+                # MHR model does not support skip_correctives, fall back
+                curr_skinned_verts, curr_skel_state = self.mhr(
+                    shape_params, model_params, expr_params
+                )
+        else:
+            curr_skinned_verts, curr_skel_state = self.mhr(
+                shape_params, model_params, expr_params
+            )
         curr_joint_coords, curr_joint_quats, _ = torch.split(
             curr_skel_state, [3, 4, 1], dim=2
         )

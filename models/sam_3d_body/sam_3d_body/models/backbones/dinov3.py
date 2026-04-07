@@ -26,6 +26,11 @@ class Dinov3Backbone(nn.Module):
         self.patch_size = self.encoder.patch_size
         self.embed_dim = self.embed_dims = self.encoder.embed_dim
 
+    def apply_compile(self, mode="reduce-overhead"):
+        """torch.compile the backbone encoder for faster inference."""
+        print(f"  Compiling DINOv3 backbone (mode={mode})...")
+        self.encoder = torch.compile(self.encoder, mode=mode)
+
     def forward(self, x, extra_embed=None):
         """
         Encode a RGB image using a ViT-backbone

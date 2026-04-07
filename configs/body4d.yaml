@@ -24,6 +24,18 @@ sam_3d_body:
   detector_path: ""
   segmentor_path: ""
 
+  # Fast-SAM-3D-Body acceleration options (all disabled by default)
+  fast_mode:
+    enable: false              # master switch
+    compile_backbone: false    # torch.compile DINOv3 backbone
+    compile_decoder: false     # torch.compile decoder layers
+    skip_correctives: false    # skip MHR corrective blendshapes
+    skip_keypoint_prompt: false # skip keypoint prompt refinement pass
+    layer_dtype: "fp32"        # decoder precision: "fp32" | "bf16" | "fp16"
+    body_interm_layers: null   # null=all, e.g. [0,1,2] to prune layer 3
+    hand_interm_layers: null   # null=all, e.g. [0,1] to prune layers 2,3
+    batch_hands: false         # merge left+right hand backbone calls
+
 runtime:
   output_dir: ./outputs
   smpl_export: false

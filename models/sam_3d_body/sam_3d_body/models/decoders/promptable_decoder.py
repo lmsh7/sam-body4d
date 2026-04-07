@@ -87,9 +87,15 @@ class PromptableDecoder(nn.Module):
         self.do_interm_preds = do_interm_preds
         self.do_keypoint_tokens = do_keypoint_tokens
         self.keypoint_token_update = keypoint_token_update
+        self.active_interm_layers = None  # None = all layers; set() to prune
 
         self.frozen = frozen
         self._freeze_stages()
+
+    def apply_compile(self, mode="reduce-overhead"):
+        """torch.compile individual TransformerDecoderLayer modules."""
+        for i, layer in enumerate(self.layers):
+            self.layers[i] = torch.compile(layer, mode=mode, dynamic=True)
 
     def forward(
         self,
@@ -145,6 +151,10 @@ class PromptableDecoder(nn.Module):
                 image_embedding = image_embedding[:, : image_augment.shape[1]]
 
             if self.do_interm_preds and layer_idx < len(self.layers) - 1:
+                # Skip intermediate prediction if this layer is pruned
+                if self.active_interm_layers is not None and layer_idx not in self.active_interm_layers:
+                    continue
+
                 curr_pose_output = token_to_pose_output_fn(
                     self.norm_final(token_embedding),
                     prev_pose_output=(
