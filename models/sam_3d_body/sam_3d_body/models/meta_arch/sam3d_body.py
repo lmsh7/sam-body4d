@@ -1270,40 +1270,32 @@ class SAM3DBody(BaseModel):
 
         return output
 
-    def _run_backbone_only(self, batch: Dict):
-        """Run backbone + ray conditioning, return image embeddings.
+    def _run_backbone_only(self, img_flat):
+        """Run backbone on pre-flattened images, return image embeddings.
 
         Used by Phase 5 (batch_hands) to share backbone across left+right hands.
+
+        Args:
+            img_flat: (N, 3, H, W) already-flattened image tensor
+        Returns:
+            image_embeddings: (N, C, H', W') backbone features
         """
         x = self.data_preprocess(
-            self._flatten_person(batch["img"]),
+            img_flat,
             crop_width=(
                 self.cfg.MODEL.BACKBONE.TYPE
                 in ["vit_hmr", "vit", "vit_b", "vit_l", "vit_hmr_512_384"]
             ),
         )
 
-        ray_cond = self.get_ray_condition(batch)
-        ray_cond = self._flatten_person(ray_cond)
-        if self.cfg.MODEL.BACKBONE.TYPE in ["vit_hmr", "vit", "vit_b", "vit_l"]:
-            ray_cond = ray_cond[:, :, :, 32:-32]
-        elif self.cfg.MODEL.BACKBONE.TYPE in ["vit_hmr_512_384"]:
-            ray_cond = ray_cond[:, :, :, 64:-64]
-
         image_embeddings = self.backbone(
-            x.type(self.backbone_dtype), extra_embed=ray_cond
+            x.type(self.backbone_dtype), extra_embed=None
         )
         if isinstance(image_embeddings, tuple):
             image_embeddings = image_embeddings[-1]
         image_embeddings = image_embeddings.type(x.dtype)
 
-        # Mask condition
-        if self.cfg.MODEL.PROMPT_ENCODER.get("MASK_EMBED_TYPE", None) is not None:
-            if self.cfg.MODEL.PROMPT_ENCODER.get("MASK_PROMPT", "v1") == "v1":
-                mask_embeddings = self._get_mask_prompt(batch, image_embeddings)
-                image_embeddings = image_embeddings + mask_embeddings
-
-        return image_embeddings, ray_cond
+        return image_embeddings
 
     def _run_hand_decoder_only(self, batch: Dict, image_embeddings, kps_batch=None):
         """Run hand decoder given pre-computed image embeddings.
@@ -1953,20 +1945,14 @@ class SAM3DBody(BaseModel):
         if getattr(self, '_fast_batch_hands', False):
             # Phase 5: Merged backbone for left+right hands
             # Concatenate images along the flattened batch dimension, run backbone once
-            lhand_flat = self._flatten_person(batch_lhand["img"])
-            rhand_flat = self._flatten_person(batch_rhand["img"])
-            merged_img_batch = {
-                "img": torch.cat([batch_lhand["img"], batch_rhand["img"]], dim=0),
-            }
-            # Copy fields needed by _run_backbone_only from lhand (both have same spatial dims)
-            for k in ("ori_img_size", "img_size", "affine_trans", "bbox_center", "bbox_scale"):
-                if k in batch_lhand:
-                    merged_img_batch[k] = torch.cat([batch_lhand[k], batch_rhand[k]], dim=0)
-            if "mask" in batch_lhand and batch_lhand["mask"] is not None:
-                merged_img_batch["mask"] = torch.cat([batch_lhand["mask"], batch_rhand["mask"]], dim=0)
-            merged_img_batch["cam_int"] = batch_lhand.get("cam_int", batch.get("cam_int"))
+            # Flatten images from [B, N, 3, H, W] to [B*N, 3, H, W]
+            lhand_img = batch_lhand["img"]
+            rhand_img = batch_rhand["img"]
+            lhand_flat = lhand_img.flatten(0, 1)  # (B_l*N, 3, H, W)
+            rhand_flat = rhand_img.flatten(0, 1)  # (B_r*N, 3, H, W)
+            merged_flat = torch.cat([lhand_flat, rhand_flat], dim=0)
 
-            merged_embeddings, _ = self._run_backbone_only(merged_img_batch)
+            merged_embeddings = self._run_backbone_only(merged_flat)
 
             n_lhand = lhand_flat.shape[0]
             lhand_embeddings = merged_embeddings[:n_lhand]
