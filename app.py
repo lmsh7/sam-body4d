@@ -815,7 +815,8 @@ def mask_completion_and_iou_final(pred_amodal_masks, pred_res, obj_id, batch_mas
 
 def _run_obj_diffusion(worker, obj_id, modal_pixels, depth_pixels, batch_masks,
                        i, batch_size, pred_res, pred_res_hi, W, H,
-                       output_dir, occ_dict_len, depth_pixels_hi=None):
+                       output_dir, occ_dict_len, depth_pixels_hi=None,
+                       num_inference_steps=25):
     """Run the full diffusion pipeline for a single obj_id on a specific GPU worker.
 
     Returns a dict with keys: obj_ratio, iou_dict, occ_dict, idx_dict, idx_path.
@@ -838,6 +839,7 @@ def _run_obj_diffusion(worker, obj_id, modal_pixels, depth_pixels, batch_masks,
         height=pred_res[0],
         width=pred_res[1],
         num_frames=modal_batch.shape[1],
+        num_inference_steps=num_inference_steps,
         decode_chunk_size=8,
         motion_bucket_id=127,
         fps=8,
@@ -890,6 +892,7 @@ def _run_obj_diffusion(worker, obj_id, modal_pixels, depth_pixels, batch_masks,
             height=pred_res_hi[0],
             width=pred_res_hi[1],
             num_frames=sum(keep_idx),
+            num_inference_steps=num_inference_steps,
             decode_chunk_size=8,
             motion_bucket_id=127,
             fps=8,
@@ -932,6 +935,7 @@ def _run_obj_diffusion(worker, obj_id, modal_pixels, depth_pixels, batch_masks,
             height=pred_res_hi[0],
             width=pred_res_hi[1],
             num_frames=sum(keep_idx),
+            num_inference_steps=num_inference_steps,
             decode_chunk_size=8,
             motion_bucket_id=127,
             fps=8,
@@ -1039,6 +1043,7 @@ def on_4d_generation(video_path: str):
                         worker, obj_id, modal_pixels, depth_pixels, batch_masks,
                         i, batch_size, pred_res, pred_res_hi, W, H,
                         OUTPUT_DIR, len(batch_masks), depth_pixels_hi,
+                        CONFIG.completion.get('num_inference_steps', 25),
                     )
                     futures[fut] = obj_id
 

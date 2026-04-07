@@ -248,7 +248,7 @@ class OfflineApp:
     @staticmethod
     def _run_obj_diffusion_offline(worker, obj_id, modal_pixels, depth_pixels,
                                    batch_masks, i, batch_size, pred_res, pred_res_hi,
-                                   W, H, output_dir):
+                                   W, H, output_dir, num_inference_steps=25):
         """Run the full diffusion pipeline for a single obj_id on a specific GPU worker (offline version)."""
         w_dev = worker['device']
         torch.cuda.set_device(w_dev)
@@ -268,6 +268,7 @@ class OfflineApp:
             height=pred_res[0],
             width=pred_res[1],
             num_frames=modal_batch.shape[1],
+            num_inference_steps=num_inference_steps,
             decode_chunk_size=8,
             motion_bucket_id=127,
             fps=8,
@@ -386,6 +387,7 @@ class OfflineApp:
                 height=pred_res_hi[0],
                 width=pred_res_hi[1],
                 num_frames=end-start,
+                num_inference_steps=num_inference_steps,
                 decode_chunk_size=8,
                 motion_bucket_id=127,
                 fps=8,
@@ -478,6 +480,7 @@ class OfflineApp:
                             worker, obj_id, modal_pixels, depth_pixels,
                             batch_masks, i, batch_size, pred_res, pred_res_hi, W, H,
                             self.OUTPUT_DIR,
+                            self.CONFIG.completion.get('num_inference_steps', 25),
                         )
                         futures[fut] = obj_id
 

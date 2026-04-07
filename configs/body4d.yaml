@@ -52,3 +52,4 @@ completion:
 
   depth_encoder: vitl
   max_occ_len: 25
+  num_inference_steps: 25  # diffusion denoising steps (default 25, try 15 for ~40% speedup)
