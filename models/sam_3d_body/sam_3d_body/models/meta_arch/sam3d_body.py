@@ -296,7 +296,7 @@ class SAM3DBody(BaseModel):
 
         print("[SAM3DBody] Fast mode optimizations applied.")
 
-    def _compile_decoders(self, mode="reduce-overhead"):
+    def _compile_decoders(self, mode="default"):
         """torch.compile individual decoder layers."""
         print(f"  Compiling decoder layers (mode={mode})...")
         self.decoder.apply_compile(mode)

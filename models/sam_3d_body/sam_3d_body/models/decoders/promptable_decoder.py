@@ -92,8 +92,13 @@ class PromptableDecoder(nn.Module):
         self.frozen = frozen
         self._freeze_stages()
 
-    def apply_compile(self, mode="reduce-overhead"):
-        """torch.compile individual TransformerDecoderLayer modules."""
+    def apply_compile(self, mode="default"):
+        """torch.compile individual TransformerDecoderLayer modules.
+
+        Uses 'default' mode because 'reduce-overhead' enables CUDA graph
+        caching which conflicts with variable batch sizes across body/hand
+        decoder calls.
+        """
         for i, layer in enumerate(self.layers):
             self.layers[i] = torch.compile(layer, mode=mode, dynamic=True)
 
