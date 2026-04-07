@@ -19,22 +19,39 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-def init_amodal_segmentation_model(model_path_mask, device="cuda"):
+def _quantize_unet_fp8(unet):
+    """Apply FP8 dynamic quantization to UNet Linear layers for inference speedup."""
+    try:
+        from torchao.quantization import quantize_, float8_dynamic_activation_float8_weight
+        quantize_(unet, float8_dynamic_activation_float8_weight())
+        print(f"[FP8] UNet quantized to float8 dynamic activation + float8 weight")
+    except ImportError:
+        print("[FP8] torchao not installed, skipping FP8 quantization. "
+              "Install with: pip install torchao")
+    except Exception as e:
+        print(f"[FP8] Quantization failed ({e}), falling back to fp16")
+
+
+def init_amodal_segmentation_model(model_path_mask, device="cuda", use_fp8=True):
     pipeline_mask = DiffusionVASPipeline.from_pretrained(
         model_path_mask, dtype=torch.float16
     ).to(device)
     pipeline_mask.set_progress_bar_config(disable=True)
     pipeline_mask.unet.set_attn_processor(AttnProcessor2_0())
+    if use_fp8:
+        _quantize_unet_fp8(pipeline_mask.unet)
 
     return pipeline_mask
 
 
-def init_rgb_model(model_path_rgb, device="cuda"):
+def init_rgb_model(model_path_rgb, device="cuda", use_fp8=True):
     pipeline_rgb = DiffusionVASPipeline.from_pretrained(
         model_path_rgb, dtype=torch.float16
     ).to(device)
     pipeline_rgb.set_progress_bar_config(disable=True)
     pipeline_rgb.unet.set_attn_processor(AttnProcessor2_0())
+    if use_fp8:
+        _quantize_unet_fp8(pipeline_rgb.unet)
 
     return pipeline_rgb
 
