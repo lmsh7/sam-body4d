@@ -167,14 +167,12 @@ class PyTorch3DBatchRenderer:
         Parameters
         ----------
         verts_list : list of (V_i, 3) float32 tensors on *device*
-            Per-mesh vertices.  Vertices should already include the
-            180-deg X-flip (``y, z *= -1``) applied by the caller.
+            Per-mesh vertices in HMR world coordinates (no flip needed).
         faces_list : list of (F_i, 3) int64 tensors on *device*
         colors_list : list of (V_i, 3) float32 RGB [0, 1] tensors on *device*
         focal_lengths : (B,) float32 tensor
         cam_translations : (B, 3) float32 tensor
-            Same convention as pyrender: ``cam_t`` with ``[0] *= -1``
-            already applied by caller.
+            Raw ``cam_t`` from HMR (unmodified).
         image_size : (H, W) -- all images in this call share the same size.
         bg_images : (B, H, W, 3) float32 [0, 1] or *None* for white bg.
         sub_batch_size : max meshes per GPU pass.
@@ -225,26 +223,32 @@ class PyTorch3DBatchRenderer:
         meshes = Meshes(verts=verts_list, faces=faces_list, textures=textures)
 
         # --- Cameras ---
-        # PyTorch3D screen-space convention (in_ndc=False):
-        #   focal_length sign: positive = standard pinhole
-        #   principal_point: (px, py) in pixels from top-left
-        #   R: identity (no rotation)
-        #   T: camera translation
+        # Raw cam_t from HMR: [tx, ty, tz] where tz > 0 (person in front).
+        # Caller passes it unmodified (no x-negate, no mesh flip).
         #
-        # The pyrender code does:
-        #   camera_translation[0] *= -1   (caller already did this)
-        #   mesh gets 180-deg X-flip      (caller already did this on verts)
+        # PyTorch3D PerspectiveCameras(in_ndc=False) convention:
+        #   Camera at origin, looking along +Z.
+        #   x_screen =  focal * X_cam / Z_cam + cx   (x_cam left  = x_screen left)
+        #   y_screen = -focal * Y_cam / Z_cam + cy   (y_cam up    = y_screen up)
+        #   But PyTorch3D internally flips x: x_ndc = -X/Z, so screen x
+        #   goes LEFT for positive X_cam.
         #
-        # In PyTorch3D screen coords the x-axis points right and y-axis
-        # points down, which matches OpenCV / pyrender after the X-flip.
-        # We need to negate T_y because PyTorch3D's T convention is
-        # "translate the *world* relative to the camera", and its y-axis
-        # in screen coords points down.
+        # The world->camera transform is:  p_cam = p_world @ R + T
+        # With R = I, T acts as the camera-space offset of the world origin.
+        # So T = -camera_position_in_world.
+        #
+        # In the HMR convention cam_t IS the camera position (roughly).
+        # To place the mesh (centered near origin) at cam_t in front of
+        # the camera, we set T = cam_t directly (since p_cam = p_mesh + T,
+        # this shifts the mesh to +Z).
+        #
+        # PyTorch3D's x-axis points LEFT in screen space, so we negate
+        # T_x to get the correct left-right placement.
+        # PyTorch3D's y-axis points UP in camera space but screen y goes
+        # down, which the projection handles internally — no T_y flip needed.
 
         T = cam_translations.clone()
-        # T[:, 0] already negated by caller (matches pyrender)
-        # T[:, 1] needs negation for PyTorch3D screen-coord convention
-        T[:, 1] *= -1.0
+        T[:, 0] *= -1.0  # flip x for PyTorch3D left-handed screen x
 
         R = torch.eye(3, device=self.device).unsqueeze(0).expand(B, -1, -1)
         fl = focal_lengths.unsqueeze(1).expand(-1, 2)  # (B, 2)  fx == fy

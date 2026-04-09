@@ -138,13 +138,10 @@ def _prepare_combined_mesh(
     fake_cam_t = (np.max(last_2, axis=0) + np.min(last_2, axis=0)) / 2.0
     verts_np = verts_np - fake_cam_t
 
-    # 180° X-flip (matches pyrender convention)
-    verts_np[:, 1] *= -1.0
-    verts_np[:, 2] *= -1.0
-
-    # cam_t for camera: negate x (pyrender convention)
+    # No 180° X-flip for PyTorch3D — camera looks along +Z,
+    # mesh is already in the correct half-space.
+    # cam_t passed directly (no x-negation, handled by renderer).
     cam_t = fake_cam_t.copy()
-    cam_t[0] *= -1.0
 
     focal = float(outputs[-1]["focal_length"])
 
@@ -248,12 +245,8 @@ def batch_render_individual(
             continue
         for pid, person_output in enumerate(outputs):
             v = person_output["pred_vertices"].copy()
-            # 180° X-flip
-            v[:, 1] *= -1.0
-            v[:, 2] *= -1.0
-
+            # No 180° X-flip for PyTorch3D
             cam_t = person_output["pred_cam_t"].copy()
-            cam_t[0] *= -1.0
 
             c_rgb = np.array(color_list[id_current[pid] + 4], dtype=np.float32) / 255.0
             c = np.broadcast_to(c_rgb, (v.shape[0], 3)).copy()
