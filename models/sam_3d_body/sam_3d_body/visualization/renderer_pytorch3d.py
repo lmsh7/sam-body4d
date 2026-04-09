@@ -248,8 +248,7 @@ class PyTorch3DBatchRenderer:
         # down, which the projection handles internally — no T_y flip needed.
 
         T = cam_translations.clone()
-        T[:, 0] *= -1.0  # flip x for PyTorch3D left-handed screen x
-        # T_y already flipped by caller (verts and cam_t Y both negated)
+        # No T_x flip — caller passes raw cam_t with Y already negated
 
         R = torch.eye(3, device=self.device).unsqueeze(0).expand(B, -1, -1)
         fl = focal_lengths.unsqueeze(1).expand(-1, 2)  # (B, 2)  fx == fy
