@@ -105,7 +105,7 @@ class PyTorch3DBatchRenderer:
     """
 
     # Upper bound on meshes rendered in a single GPU pass to cap VRAM.
-    DEFAULT_SUB_BATCH = 16
+    DEFAULT_SUB_BATCH = 64
 
     def __init__(self, device: torch.device = None):
         if device is None:
@@ -129,7 +129,7 @@ class PyTorch3DBatchRenderer:
                 image_size=(H, W),
                 blur_radius=0.0,
                 faces_per_pixel=1,
-                bin_size=0,  # use naive rasterization for robustness
+                # bin_size omitted → PyTorch3D auto-selects coarse-to-fine
             )
         return self._raster_cache[key]
 
