@@ -572,17 +572,23 @@ def _build_animated_glb(meshes: List[trimesh.Trimesh], output_path: str, fps: fl
 
 
 def aggregate_mesh_glb(mesh_dir: str, fps: float = 30.0):
-    """Aggregate per-frame PLY files into a single animated GLB per person."""
+    """Aggregate per-frame mesh files into a single animated GLB per person."""
     for person_sub in sorted(os.listdir(mesh_dir)):
         person_path = os.path.join(mesh_dir, person_sub)
         if not os.path.isdir(person_path):
             continue
 
-        ply_files = sorted(f for f in os.listdir(person_path) if f.endswith(".ply"))
-        if len(ply_files) < 2:
+        # Prefer PLY; fall back to per-frame GLB (skip animated.glb itself)
+        mesh_files = sorted(f for f in os.listdir(person_path) if f.endswith(".ply"))
+        if not mesh_files:
+            mesh_files = sorted(
+                f for f in os.listdir(person_path)
+                if f.endswith(".glb") and f != "animated.glb"
+            )
+        if len(mesh_files) < 2:
             continue
 
-        meshes = [trimesh.load(os.path.join(person_path, f)) for f in ply_files]
+        meshes = [trimesh.load(os.path.join(person_path, f)) for f in mesh_files]
         output_path = os.path.join(person_path, "animated.glb")
         _build_animated_glb(meshes, output_path, fps)
 
