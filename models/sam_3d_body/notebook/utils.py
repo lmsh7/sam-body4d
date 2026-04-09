@@ -634,7 +634,7 @@ def display_results_grid(
     plt.show()
 
 
-def process_image_with_mask(estimator, image_path: str, mask_path: str, idx_path, idx_dict, mhr_shape_scale_dict, occ_dict, batch_kps=None, kps_id=None, cam_int=None, iou_dict=None, predictor=None):
+def process_image_with_mask(estimator, image_path: str, mask_path: str, idx_path, idx_dict, mhr_shape_scale_dict, occ_dict, batch_kps=None, kps_id=None, cam_int=None, iou_dict=None, predictor=None, inference_type="full"):
     """
     Process image with external mask input.
 
@@ -657,7 +657,7 @@ def process_image_with_mask(estimator, image_path: str, mask_path: str, idx_path
             estimator, image_path, mask_path, idx_path, idx_dict,
             mhr_shape_scale_dict, occ_dict, batch_kps=batch_kps,
             kps_id=kps_id, cam_int=cam_int, iou_dict=iou_dict,
-            predictor=predictor,
+            predictor=predictor, inference_type=inference_type,
         )
 
     # ---- Batched path: aggregate all people per frame ----
@@ -724,6 +724,7 @@ def process_image_with_mask(estimator, image_path: str, mask_path: str, idx_path
         mhr_shape_scale_dict=mhr_shape_scale_dict,
         kps_batch=kps_batch_list, occ_dict=None,
         use_mask=True, kps_id=kps_id, cam_int=cam_int,
+        inference_type=inference_type,
     )
 
     # Reconstruct output with empty frames inserted back
@@ -742,7 +743,7 @@ def process_image_with_mask(estimator, image_path: str, mask_path: str, idx_path
     return final_outputs, final_ids, empty_frame_list
 
 
-def _process_image_with_mask_per_person(estimator, image_path, mask_path, idx_path, idx_dict, mhr_shape_scale_dict, occ_dict, batch_kps=None, kps_id=None, cam_int=None, iou_dict=None, predictor=None):
+def _process_image_with_mask_per_person(estimator, image_path, mask_path, idx_path, idx_dict, mhr_shape_scale_dict, occ_dict, batch_kps=None, kps_id=None, cam_int=None, iou_dict=None, predictor=None, inference_type="full"):
     """
     Original per-person processing path. Used when occlusion completion is
     active and different people may use different reference images per frame.
@@ -884,9 +885,9 @@ def _process_image_with_mask_per_person(estimator, image_path, mask_path, idx_pa
             _occ_kps_batch = None
 
         if len(no_occ_image_batch) > 0:
-            no_occ_outputs = estimator.process_frames(no_occ_image_batch, bboxes=no_occ_bbox_batch, masks=no_occ_mask_batch, id_batch=[[1] for idb in range(len(no_occ_image_batch))], idx_path={}, idx_dict={}, mhr_shape_scale_dict=mhr_shape_scale_dict, kps_batch=no_occ_kps_batch, occ_dict=None, use_mask=True, kps_id=kps_id, cam_int=cam_int)
+            no_occ_outputs = estimator.process_frames(no_occ_image_batch, bboxes=no_occ_bbox_batch, masks=no_occ_mask_batch, id_batch=[[1] for idb in range(len(no_occ_image_batch))], idx_path={}, idx_dict={}, mhr_shape_scale_dict=mhr_shape_scale_dict, kps_batch=no_occ_kps_batch, occ_dict=None, use_mask=True, kps_id=kps_id, cam_int=cam_int, inference_type=inference_type)
         if len(_occ_image_batch) > 0:
-            _occ_outputs = estimator.process_frames(_occ_image_batch, bboxes=_occ_bbox_batch, masks=_occ_mask_batch, id_batch=[[1] for idb in range(len(_occ_image_batch))], idx_path={}, idx_dict={}, mhr_shape_scale_dict=mhr_shape_scale_dict, kps_batch=_occ_kps_batch, occ_dict=None, use_mask=True, kps_id=kps_id, _occ_image_batch_ori=_occ_image_batch_ori, cam_int=cam_int)
+            _occ_outputs = estimator.process_frames(_occ_image_batch, bboxes=_occ_bbox_batch, masks=_occ_mask_batch, id_batch=[[1] for idb in range(len(_occ_image_batch))], idx_path={}, idx_dict={}, mhr_shape_scale_dict=mhr_shape_scale_dict, kps_batch=_occ_kps_batch, occ_dict=None, use_mask=True, kps_id=kps_id, _occ_image_batch_ori=_occ_image_batch_ori, cam_int=cam_int, inference_type=inference_type)
 
         oid_outputs = []
         ia, ib = 0, 0

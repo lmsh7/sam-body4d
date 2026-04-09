@@ -42,6 +42,7 @@ sam_3d_body:
     body_interm_layers: null   # null=all, e.g. [0,1,2] to prune layer 3
     hand_interm_layers: null   # null=all, e.g. [0,1] to prune layers 2,3
     batch_hands: false         # merge left+right hand backbone calls
+    inference_type: "full"     # "full" (body+hands) | "body" (body only, ~3x faster)
 
 runtime:
   output_dir: ./outputs

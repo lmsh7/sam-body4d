@@ -524,7 +524,8 @@ class OfflineApp:
             cam_int = self.sam3_3d_body_model.fov_estimator.get_cam_intrinsics(_first_img)
             print(f"  [TIMER] FOV estimator: {time.time() - _t_fov_start:.2f}s")
 
-            mask_outputs, id_batch, empty_frame_list = process_image_with_mask(self.sam3_3d_body_model, batch_images, batch_masks, idx_path, idx_dict, mhr_shape_scale_dict, occ_dict, cam_int=cam_int)
+            _inference_type = self.CONFIG.sam_3d_body.get('fast_mode', {}).get('inference_type', 'full')
+            mask_outputs, id_batch, empty_frame_list = process_image_with_mask(self.sam3_3d_body_model, batch_images, batch_masks, idx_path, idx_dict, mhr_shape_scale_dict, occ_dict, cam_int=cam_int, inference_type=_inference_type)
 
             _t_vis_start = time.time()
 
