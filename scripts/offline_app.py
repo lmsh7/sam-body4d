@@ -651,12 +651,36 @@ class OfflineApp:
         return out_4d_path
 
 
+def visualize_detections(image, outputs, save_path):
+    """Draw detected bboxes with index labels on image and save."""
+    vis = np.array(image).copy()
+    colors = [
+        (255,0,0), (0,255,0), (0,0,255), (255,255,0), (255,0,255),
+        (0,255,255), (128,0,255), (255,128,0), (0,128,255), (128,255,0),
+    ]
+    for idx, output in enumerate(outputs):
+        xmin, ymin, xmax, ymax = [int(v) for v in output['bbox']]
+        color = colors[idx % len(colors)]
+        cv2.rectangle(vis, (xmin, ymin), (xmax, ymax), color, 2)
+        label = f"#{idx}"
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+        cv2.rectangle(vis, (xmin, ymin - th - 6), (xmin + tw + 4, ymin), color, -1)
+        cv2.putText(vis, label, (xmin + 2, ymin - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,255), 2)
+    Image.fromarray(vis).save(save_path)
+    print(f"Detection visualization saved to: {save_path}")
+
+
 def inference(args):
     # init configs and cover with cmd options
     predictor = OfflineApp()
     if args.output_dir is not None:
         predictor.OUTPUT_DIR = args.output_dir
         os.makedirs(predictor.OUTPUT_DIR, exist_ok=True)
+
+    # parse --track_ids
+    track_ids = None
+    if args.track_ids is not None:
+        track_ids = set(int(x.strip()) for x in args.track_ids.split(","))
 
     # human detection on the frame where human FIRST appear
     if os.path.isfile(args.input_video) and args.input_video.endswith(".mp4"):
@@ -668,22 +692,31 @@ def inference(args):
             outputs = predictor.sam3_3d_body_model.process_one_image(image, bbox_thr=0.6,)
             if len(outputs) > 0:
                 break
-        
+
+        if args.vis_det:
+            vis_path = os.path.join(predictor.OUTPUT_DIR, "detections.jpg")
+            visualize_detections(image, outputs, vis_path)
+            return
+
         inference_state = predictor.predictor.init_state(video_path=args.input_video)
         predictor.predictor.clear_all_points_in_video(inference_state)
         predictor.RUNTIME['inference_state'] = inference_state
         predictor.RUNTIME['out_obj_ids'] = []
 
         # 1. load bbox (first frame)
-        for obj_id, output in enumerate(outputs):
-            # Let's add a box at (x_min, y_min, x_max, y_max) = (300, 0, 500, 400) to get started
+        print(f"Found {len(outputs)} detections, tracking: {track_ids if track_ids else 'all'}")
+        assigned_id = 0
+        for det_idx, output in enumerate(outputs):
+            if track_ids is not None and det_idx not in track_ids:
+                continue
+            assigned_id += 1
             xmin, ymin, xmax, ymax = output['bbox']
             rel_box = [[xmin / width, ymin / height, xmax / width, ymax / height]]
             rel_box = np.array(rel_box, dtype=np.float32)
             _, predictor.RUNTIME['out_obj_ids'], low_res_masks, video_res_masks = predictor.predictor.add_new_points_or_box(
                 inference_state=predictor.RUNTIME['inference_state'],
                 frame_idx=starting_frame_idx,
-                obj_id=obj_id+1,
+                obj_id=assigned_id,
                 box=rel_box,
             )
 
@@ -700,21 +733,31 @@ def inference(args):
                 break
             starting_frame_idx += 1
 
+        if args.vis_det:
+            det_image = Image.open(image_list[starting_frame_idx]).convert('RGB')
+            vis_path = os.path.join(predictor.OUTPUT_DIR, "detections.jpg")
+            visualize_detections(np.array(det_image), outputs, vis_path)
+            return
+
         inference_state = predictor.predictor.init_state(video_path=image_list)
         predictor.predictor.clear_all_points_in_video(inference_state)
         predictor.RUNTIME['inference_state'] = inference_state
         predictor.RUNTIME['out_obj_ids'] = []
 
         # 1. load bbox (first frame)
-        for obj_id, output in enumerate(outputs):
-            # Let's add a box at (x_min, y_min, x_max, y_max) = (300, 0, 500, 400) to get started
+        print(f"Found {len(outputs)} detections, tracking: {track_ids if track_ids else 'all'}")
+        assigned_id = 0
+        for det_idx, output in enumerate(outputs):
+            if track_ids is not None and det_idx not in track_ids:
+                continue
+            assigned_id += 1
             xmin, ymin, xmax, ymax = output['bbox']
             rel_box = [[xmin / width, ymin / height, xmax / width, ymax / height]]
             rel_box = np.array(rel_box, dtype=np.float32)
             _, predictor.RUNTIME['out_obj_ids'], low_res_masks, video_res_masks = predictor.predictor.add_new_points_or_box(
                 inference_state=predictor.RUNTIME['inference_state'],
                 frame_idx=starting_frame_idx,
-                obj_id=obj_id+1,
+                obj_id=assigned_id,
                 box=rel_box,
             )
 
@@ -729,6 +772,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Offline 4D Body Generation from Videos")
     parser.add_argument("--output_dir", type=str, help="Path to the output directory")
     parser.add_argument("--input_video", type=str, required=True, help="Path to the input video (either *.mp4 or a directory containing image sequences)")
+    parser.add_argument("--track_ids", type=str, default=None, help="Comma-separated detection indices to track (0-based), e.g. '1,3'. Default: track all.")
+    parser.add_argument("--vis_det", action="store_true", help="Only run detection, visualize bboxes with index labels, then exit.")
     args = parser.parse_args()
 
     input_path = args.input_video

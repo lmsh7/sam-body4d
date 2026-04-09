@@ -1,4 +1,4 @@
-.PHONY: app offline setup
+.PHONY: app offline vis_det setup
 
 # Gradio demo (remote workspace)
 app:
@@ -14,6 +14,13 @@ offline:
 	export PYOPENGL_PLATFORM=osmesa && \
 	export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True && \
 	python scripts/offline_app.py $(ARGS)
+
+# Visualize detections (save bbox image then exit)
+vis_det:
+	export PYTHONPATH="/inspire/hdd/global_user/xitong-inspire-admin/sam-body4d/models/sam3:$$PYTHONPATH" && \
+	export PYOPENGL_PLATFORM=osmesa && \
+	export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True && \
+	python scripts/offline_app.py --vis_det $(ARGS)
 
 # Download checkpoints
 setup:
