@@ -588,7 +588,7 @@ def aggregate_mesh_glb(mesh_dir: str, fps: float = 30.0):
         if len(mesh_files) < 2:
             continue
 
-        meshes = [trimesh.load(os.path.join(person_path, f)) for f in mesh_files]
+        meshes = [trimesh.load(os.path.join(person_path, f), force="mesh") for f in mesh_files]
         output_path = os.path.join(person_path, "animated.glb")
         _build_animated_glb(meshes, output_path, fps)
 
