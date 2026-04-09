@@ -1032,6 +1032,10 @@ def on_4d_generation(video_path: str):
         from sam_3d_body.visualization.renderer_pytorch3d import PyTorch3DBatchRenderer
         gpu_renderer = PyTorch3DBatchRenderer(device=device)
         print(f"[INFO] Using PyTorch3D GPU batch renderer on {device}")
+    elif _render_backend == "nvdiffrast":
+        from sam_3d_body.visualization.renderer_nvdiffrast import NvDiffrastBatchRenderer
+        gpu_renderer = NvDiffrastBatchRenderer(device=device)
+        print(f"[INFO] Using nvdiffrast GPU batch renderer on {device}")
 
     for i in tqdm(range(0, n, batch_size)):
         _t_batch_start = time.time()

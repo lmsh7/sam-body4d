@@ -36,5 +36,8 @@ dependencies = [
     "MoGe @ git+https://github.com/microsoft/MoGe.git",
 ]
 
+[project.optional-dependencies]
+nvdiffrast = ["nvdiffrast"]
+
 [tool.setuptools]
 packages = { find = { where = ["."] , include = ["models", "models.*"] } }
