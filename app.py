@@ -30,7 +30,7 @@ from omegaconf import OmegaConf
 from utils import draw_point_marker, mask_painter, images_to_mp4, DAVIS_PALETTE, jpg_folder_to_mp4, is_super_long_or_wide, keep_largest_component, is_skinny_mask, bbox_from_mask, gpu_profile, resize_mask_with_unique_label
 
 from models.sam_3d_body.sam_3d_body import load_sam_3d_body, SAM3DBodyEstimator
-from models.sam_3d_body.notebook.utils import process_image_with_mask, save_mesh_results, save_skeleton_results, aggregate_skeleton_npz
+from models.sam_3d_body.notebook.utils import process_image_with_mask, save_mesh_results, save_skeleton_results, aggregate_skeleton_npz, aggregate_mesh_glb
 from models.sam_3d_body.tools.vis_utils import visualize_sample_together, visualize_sample
 from models.diffusion_vas.demo import init_amodal_segmentation_model, init_rgb_model, init_depth_model, load_and_transform_masks, load_and_transform_rgbs, rgb_to_depth
 
@@ -1131,6 +1131,8 @@ def on_4d_generation(video_path: str):
 
     if RUNTIME.get('smpl_export', False):
         aggregate_skeleton_npz(f"{OUTPUT_DIR}/skeleton_4d_individual")
+
+    aggregate_mesh_glb(f"{OUTPUT_DIR}/mesh_4d_individual", fps=RUNTIME['video_fps'])
 
     out_4d_path = os.path.join(OUTPUT_DIR, f"4d_{time.time():.0f}.mp4")
     jpg_folder_to_mp4(f"{OUTPUT_DIR}/rendered_frames", out_4d_path, fps=RUNTIME['video_fps'])

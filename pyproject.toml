@@ -30,6 +30,7 @@ dependencies = [
     "transformers~=4.57.3",
     "accelerate~=1.12.0",
     "imageio[ffmpeg]",
+    "pygltflib>=1.16",
 
     # MoGe
     "MoGe @ git+https://github.com/microsoft/MoGe.git",

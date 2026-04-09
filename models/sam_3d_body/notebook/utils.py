@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import json
+import trimesh
 
 from sam_3d_body import load_sam_3d_body_hf, SAM3DBodyEstimator
 from sam_3d_body.metadata.mhr70 import pose_info as mhr70_pose_info, mhr_names
@@ -378,6 +379,208 @@ def aggregate_skeleton_npz(skeleton_dir: str):
             frame_names=np.array(frame_names),
             valid_mask=valid_mask,
         )
+
+
+def _build_animated_glb(meshes: List[trimesh.Trimesh], output_path: str, fps: float):
+    """Build a single animated GLB from a sequence of same-topology trimesh meshes.
+
+    Uses glTF morph targets: frame 0 is the base mesh, frames 1..N-1 are stored
+    as vertex displacement morph targets.  An animation steps through them with
+    one-hot weights at the given *fps*.
+    """
+    import pygltflib
+
+    n_frames = len(meshes)
+    base = meshes[0]
+    n_verts = len(base.vertices)
+    n_morph = n_frames - 1  # morph targets count
+
+    positions = base.vertices.astype(np.float32)
+    faces_idx = base.faces.astype(np.uint32).flatten()
+
+    # Vertex colors — RGBA uint8 → float32 VEC4 for glTF
+    if base.visual and hasattr(base.visual, "vertex_colors") and base.visual.vertex_colors is not None:
+        vc = np.array(base.visual.vertex_colors, dtype=np.float32)[:, :4] / 255.0
+    else:
+        vc = np.ones((n_verts, 4), dtype=np.float32)
+    vc = vc.astype(np.float32)
+
+    # Morph target deltas
+    deltas = []
+    for i in range(1, n_frames):
+        d = (meshes[i].vertices - base.vertices).astype(np.float32)
+        deltas.append(d)
+
+    # ── Build binary buffer ──
+    blobs = []
+
+    def add_blob(data: bytes) -> tuple:
+        """Append *data* to blob list, return (offset, length). Pad to 4-byte."""
+        offset = sum(len(b) for b in blobs)
+        blobs.append(data)
+        pad = (4 - len(data) % 4) % 4
+        if pad:
+            blobs.append(b"\x00" * pad)
+        return offset, len(data)
+
+    # 0: indices
+    idx_off, idx_len = add_blob(faces_idx.tobytes())
+    # 1: base positions
+    pos_off, pos_len = add_blob(positions.tobytes())
+    # 2: vertex colors
+    vc_off, vc_len = add_blob(vc.tobytes())
+    # 3..3+n_morph-1: morph deltas
+    morph_offsets = []
+    for d in deltas:
+        off, ln = add_blob(d.tobytes())
+        morph_offsets.append((off, ln))
+
+    # Animation data: time input + weights output
+    times = np.linspace(0.0, (n_frames - 1) / fps, n_frames, dtype=np.float32)
+    time_off, time_len = add_blob(times.tobytes())
+
+    # Weights: n_frames rows × n_morph columns, one-hot stepping
+    # Frame 0: all zeros (base), frame k (k>=1): weight[k-1]=1
+    weights = np.zeros((n_frames, n_morph), dtype=np.float32)
+    for k in range(1, n_frames):
+        weights[k, k - 1] = 1.0
+    wt_off, wt_len = add_blob(weights.tobytes())
+
+    total_len = sum(len(b) for b in blobs)
+
+    # ── Accessors & BufferViews ──
+    buffer_views = []
+    accessors = []
+
+    def _add_view_accessor(byte_off, byte_len, comp_type, acc_type, count,
+                           amin=None, amax=None, target=None):
+        bv_idx = len(buffer_views)
+        bv = pygltflib.BufferView(buffer=0, byteOffset=byte_off, byteLength=byte_len)
+        if target is not None:
+            bv.target = target
+        buffer_views.append(bv)
+        acc = pygltflib.Accessor(
+            bufferView=bv_idx,
+            componentType=comp_type,
+            count=count,
+            type=acc_type,
+        )
+        if amin is not None:
+            acc.min = amin
+        if amax is not None:
+            acc.max = amax
+        accessors.append(acc)
+        return len(accessors) - 1
+
+    # acc 0: indices
+    acc_idx = _add_view_accessor(
+        idx_off, idx_len, pygltflib.UNSIGNED_INT, pygltflib.SCALAR,
+        len(faces_idx),
+        amin=[int(faces_idx.min())], amax=[int(faces_idx.max())],
+        target=pygltflib.ELEMENT_ARRAY_BUFFER,
+    )
+    # acc 1: base positions
+    acc_pos = _add_view_accessor(
+        pos_off, pos_len, pygltflib.FLOAT, pygltflib.VEC3,
+        n_verts,
+        amin=positions.min(axis=0).tolist(), amax=positions.max(axis=0).tolist(),
+        target=pygltflib.ARRAY_BUFFER,
+    )
+    # acc 2: vertex colors
+    acc_col = _add_view_accessor(
+        vc_off, vc_len, pygltflib.FLOAT, pygltflib.VEC4,
+        n_verts,
+        target=pygltflib.ARRAY_BUFFER,
+    )
+    # acc 3..3+n_morph-1: morph target positions
+    morph_acc_ids = []
+    for i, (moff, mln) in enumerate(morph_offsets):
+        d = deltas[i]
+        mid = _add_view_accessor(
+            moff, mln, pygltflib.FLOAT, pygltflib.VEC3,
+            n_verts,
+            amin=d.min(axis=0).tolist(), amax=d.max(axis=0).tolist(),
+        )
+        morph_acc_ids.append(mid)
+
+    # acc for animation time input
+    acc_time = _add_view_accessor(
+        time_off, time_len, pygltflib.FLOAT, pygltflib.SCALAR,
+        n_frames,
+        amin=[float(times[0])], amax=[float(times[-1])],
+    )
+    # acc for animation weights output
+    acc_weights = _add_view_accessor(
+        wt_off, wt_len, pygltflib.FLOAT, pygltflib.SCALAR,
+        n_frames * n_morph,
+    )
+
+    # ── Mesh with morph targets ──
+    targets = [pygltflib.Attributes(POSITION=mid) for mid in morph_acc_ids]
+
+    mesh = pygltflib.Mesh(
+        primitives=[
+            pygltflib.Primitive(
+                attributes=pygltflib.Attributes(POSITION=acc_pos, COLOR_0=acc_col),
+                indices=acc_idx,
+                targets=targets,
+            )
+        ],
+        weights=[0.0] * n_morph,
+    )
+
+    # ── Animation ──
+    animation = pygltflib.Animation(
+        samplers=[
+            pygltflib.AnimationSampler(
+                input=acc_time,
+                output=acc_weights,
+                interpolation=pygltflib.STEP,
+            )
+        ],
+        channels=[
+            pygltflib.AnimationChannel(
+                sampler=0,
+                target=pygltflib.AnimationChannelTarget(
+                    node=0,
+                    path="weights",
+                ),
+            )
+        ],
+    )
+
+    # ── Assemble GLTF2 ──
+    gltf = pygltflib.GLTF2(
+        scene=0,
+        scenes=[pygltflib.Scene(nodes=[0])],
+        nodes=[pygltflib.Node(mesh=0)],
+        meshes=[mesh],
+        accessors=accessors,
+        bufferViews=buffer_views,
+        buffers=[pygltflib.Buffer(byteLength=total_len)],
+        animations=[animation],
+    )
+    gltf.set_binary_blob(b"".join(blobs))
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    gltf.save(output_path)
+    print(f"[OK] Animated GLB ({n_frames} frames, {n_morph} morph targets): {output_path}")
+
+
+def aggregate_mesh_glb(mesh_dir: str, fps: float = 30.0):
+    """Aggregate per-frame PLY files into a single animated GLB per person."""
+    for person_sub in sorted(os.listdir(mesh_dir)):
+        person_path = os.path.join(mesh_dir, person_sub)
+        if not os.path.isdir(person_path):
+            continue
+
+        ply_files = sorted(f for f in os.listdir(person_path) if f.endswith(".ply"))
+        if len(ply_files) < 2:
+            continue
+
+        meshes = [trimesh.load(os.path.join(person_path, f)) for f in ply_files]
+        output_path = os.path.join(person_path, "animated.glb")
+        _build_animated_glb(meshes, output_path, fps)
 
 
 def display_results_grid(
