@@ -519,7 +519,12 @@ class OfflineApp:
                 for obj_id in self.RUNTIME['out_obj_ids']:
                     occ_dict[obj_id] = [1] * len(batch_masks)
 
-            mask_outputs, id_batch, empty_frame_list = process_image_with_mask(self.sam3_3d_body_model, batch_images, batch_masks, idx_path, idx_dict, mhr_shape_scale_dict, occ_dict)
+            _t_fov_start = time.time()
+            _first_img = np.array(Image.open(batch_images[0])).astype('uint8')
+            cam_int = self.sam3_3d_body_model.fov_estimator.get_cam_intrinsics(_first_img)
+            print(f"  [TIMER] FOV estimator: {time.time() - _t_fov_start:.2f}s")
+
+            mask_outputs, id_batch, empty_frame_list = process_image_with_mask(self.sam3_3d_body_model, batch_images, batch_masks, idx_path, idx_dict, mhr_shape_scale_dict, occ_dict, cam_int=cam_int)
 
             _t_vis_start = time.time()
 
