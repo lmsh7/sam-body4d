@@ -537,9 +537,17 @@ class OfflineApp:
 
             if gpu_renderer is not None:
                 # ---- PyTorch3D GPU batch rendering path ----
+                _t_rd = time.time()
                 imgs = [cv2.imread(p) for p in image_paths]
+                _t_imread = time.time() - _t_rd
+
+                _t_rd = time.time()
                 combined_imgs = batch_render_combined(imgs, outputs_by_frame, self.sam3_3d_body_model.faces, ids_by_frame, gpu_renderer)
+                _t_combined = time.time() - _t_rd
+
+                _t_rd = time.time()
                 individual_imgs = batch_render_individual(imgs, outputs_by_frame, self.sam3_3d_body_model.faces, ids_by_frame, gpu_renderer)
+                _t_individual = time.time() - _t_rd
 
                 def _save_io(frame_idx):
                     image_path = image_paths[frame_idx]
@@ -565,8 +573,12 @@ class OfflineApp:
                             id_current=ids_by_frame[frame_idx],
                         )
 
+                _t_rd = time.time()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=_VIS_WORKERS) as pool:
                     list(pool.map(_save_io, range(len(image_paths))))
+                _t_saveio = time.time() - _t_rd
+
+                print(f"  [TIMER] vis detail: imread={_t_imread:.2f}s combined={_t_combined:.2f}s individual={_t_individual:.2f}s save_io={_t_saveio:.2f}s")
             else:
                 # ---- Legacy PyRender path ----
                 frame_args = list(zip(image_paths, outputs_by_frame, ids_by_frame))

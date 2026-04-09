@@ -1,4 +1,5 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
+import time
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -166,10 +167,12 @@ def batch_render_combined(
 
     Returns list of *B* BGR uint8 images.
     """
+    _t_total = time.time()
     device = renderer.device
     B = len(images)
     H, W = images[0].shape[:2]
 
+    _t0 = time.time()
     verts_list, faces_list_t, colors_list_t = [], [], []
     focal_list, cam_t_list = [], []
     valid_indices = []
@@ -189,6 +192,7 @@ def batch_render_combined(
         focal_list.append(focal)
         cam_t_list.append(cam_t)
         valid_indices.append(idx)
+    _t_prep = time.time() - _t0
 
     # White images for empty frames
     white = np.ones((H, W, 3), dtype=np.uint8) * 255
@@ -200,6 +204,7 @@ def batch_render_combined(
     focal_t = torch.tensor(focal_list, dtype=torch.float32, device=device)
     cam_t_t = torch.tensor(np.stack(cam_t_list), dtype=torch.float32, device=device)
 
+    _t0 = time.time()
     rendered = renderer.render_batch(
         verts_list=verts_list,
         faces_list=faces_list_t,
@@ -209,13 +214,18 @@ def batch_render_combined(
         image_size=(H, W),
         bg_images=None,  # white bg
     )
+    torch.cuda.synchronize(device)
+    _t_gpu = time.time() - _t0
 
     # Convert to numpy uint8 BGR
+    _t0 = time.time()
     rendered_np = (rendered.cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
     for i, idx in enumerate(valid_indices):
         # PyTorch3D outputs RGB; OpenCV needs BGR
         result_images[idx] = rendered_np[i, :, :, ::-1].copy()
+    _t_tonp = time.time() - _t0
 
+    print(f"  [TIMER] combined: prep={_t_prep:.2f}s gpu={_t_gpu:.2f}s tonp={_t_tonp:.2f}s total={time.time()-_t_total:.2f}s (N={len(verts_list)})")
     return result_images
 
 
@@ -230,10 +240,12 @@ def batch_render_individual(
 
     Returns list of *B* lists, each containing per-person BGR uint8 images.
     """
+    _t_total = time.time()
     device = renderer.device
     B = len(images)
     H, W = images[0].shape[:2]
 
+    _t0 = time.time()
     faces_t = torch.tensor(faces.astype(np.int64), dtype=torch.int64, device=device)
 
     # Collect all (frame_idx, person_idx) pairs
@@ -261,6 +273,7 @@ def batch_render_individual(
             focal_list.append(float(person_output["focal_length"]))
             cam_t_list.append(cam_t)
             index_map.append((frame_idx, pid))
+    _t_prep = time.time() - _t0
 
     # Initialize result structure
     per_frame_results = []
@@ -278,6 +291,7 @@ def batch_render_individual(
     focal_t = torch.tensor(focal_list, dtype=torch.float32, device=device)
     cam_t_t = torch.tensor(np.stack(cam_t_list), dtype=torch.float32, device=device)
 
+    _t0 = time.time()
     rendered = renderer.render_batch(
         verts_list=verts_list,
         faces_list=faces_list_t,
@@ -287,9 +301,14 @@ def batch_render_individual(
         image_size=(H, W),
         bg_images=None,
     )
+    torch.cuda.synchronize(device)
+    _t_gpu = time.time() - _t0
 
+    _t0 = time.time()
     rendered_np = (rendered.cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
     for i, (frame_idx, pid) in enumerate(index_map):
         per_frame_results[frame_idx][pid] = rendered_np[i, :, :, ::-1].copy()
+    _t_tonp = time.time() - _t0
 
+    print(f"  [TIMER] individual: prep={_t_prep:.2f}s gpu={_t_gpu:.2f}s tonp={_t_tonp:.2f}s total={time.time()-_t_total:.2f}s (N={len(verts_list)})")
     return per_frame_results

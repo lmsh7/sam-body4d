@@ -2,6 +2,7 @@
 # PyTorch3D batch renderer — drop-in replacement for pyrender-based Renderer.
 
 import math
+import time
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -219,36 +220,15 @@ class PyTorch3DBatchRenderer:
         H, W = image_size
 
         # --- Meshes ---
+        _t0 = time.time()
         textures = TexturesVertex(verts_features=colors_list)
         meshes = Meshes(verts=verts_list, faces=faces_list, textures=textures)
+        torch.cuda.synchronize(self.device)
+        _t_meshes = time.time() - _t0
 
-        # --- Cameras ---
-        # Raw cam_t from HMR: [tx, ty, tz] where tz > 0 (person in front).
-        # Caller passes it unmodified (no x-negate, no mesh flip).
-        #
-        # PyTorch3D PerspectiveCameras(in_ndc=False) convention:
-        #   Camera at origin, looking along +Z.
-        #   x_screen =  focal * X_cam / Z_cam + cx   (x_cam left  = x_screen left)
-        #   y_screen = -focal * Y_cam / Z_cam + cy   (y_cam up    = y_screen up)
-        #   But PyTorch3D internally flips x: x_ndc = -X/Z, so screen x
-        #   goes LEFT for positive X_cam.
-        #
-        # The world->camera transform is:  p_cam = p_world @ R + T
-        # With R = I, T acts as the camera-space offset of the world origin.
-        # So T = -camera_position_in_world.
-        #
-        # In the HMR convention cam_t IS the camera position (roughly).
-        # To place the mesh (centered near origin) at cam_t in front of
-        # the camera, we set T = cam_t directly (since p_cam = p_mesh + T,
-        # this shifts the mesh to +Z).
-        #
-        # PyTorch3D's x-axis points LEFT in screen space, so we negate
-        # T_x to get the correct left-right placement.
-        # PyTorch3D's y-axis points UP in camera space but screen y goes
-        # down, which the projection handles internally — no T_y flip needed.
-
+        # --- Cameras + Renderer setup ---
+        _t0 = time.time()
         T = cam_translations.clone()
-        # No T_x flip — caller passes raw cam_t with Y already negated
 
         R = torch.eye(3, device=self.device).unsqueeze(0).expand(B, -1, -1)
         fl = focal_lengths.unsqueeze(1).expand(-1, 2)  # (B, 2)  fx == fy
@@ -266,30 +246,42 @@ class PyTorch3DBatchRenderer:
             device=self.device,
         )
 
-        # --- Rasterizer + Shader ---
         raster_settings = self._get_raster_settings(H, W)
         lights = self._build_lights()
 
-        renderer = MeshRenderer(
-            rasterizer=MeshRasterizer(cameras=cameras, raster_settings=raster_settings),
-            shader=HardPhongShader(
-                device=self.device,
-                cameras=cameras,
-                lights=lights,
-                blend_params=BlendParams(background_color=(1.0, 1.0, 1.0)),
-            ),
+        rasterizer = MeshRasterizer(cameras=cameras, raster_settings=raster_settings)
+        shader = HardPhongShader(
+            device=self.device,
+            cameras=cameras,
+            lights=lights,
+            blend_params=BlendParams(background_color=(1.0, 1.0, 1.0)),
         )
+        _t_setup = time.time() - _t0
 
-        # --- Render ---
-        # Output: (B, H, W, 4) RGBA float [0, 1]
-        rgba = renderer(meshes)
+        # --- Rasterize ---
+        _t0 = time.time()
+        fragments = rasterizer(meshes)
+        torch.cuda.synchronize(self.device)
+        _t_raster = time.time() - _t0
+
+        # --- Shade ---
+        _t0 = time.time()
+        rgba = shader(fragments, meshes)
+        torch.cuda.synchronize(self.device)
+        _t_shade = time.time() - _t0
+
         rgb = rgba[..., :3]
         alpha = rgba[..., 3:4]
 
         # --- Alpha composite ---
+        _t0 = time.time()
         if bg_images is not None:
             out = rgb * alpha + bg_images * (1.0 - alpha)
         else:
             out = rgb * alpha + (1.0 - alpha)  # white bg
+        out = out.clamp(0.0, 1.0)
+        torch.cuda.synchronize(self.device)
+        _t_composite = time.time() - _t0
 
-        return out.clamp(0.0, 1.0)
+        print(f"    [CHUNK B={B}] meshes={_t_meshes:.3f}s setup={_t_setup:.3f}s raster={_t_raster:.3f}s shade={_t_shade:.3f}s composite={_t_composite:.3f}s")
+        return out
