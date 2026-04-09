@@ -762,7 +762,8 @@ def inference(args):
             )
 
     # 2. tracking
-    predictor.on_mask_generation(start_frame_idx=0)
+    max_frames = args.max_frames if args.max_frames else 999999
+    predictor.on_mask_generation(start_frame_idx=0, max_frame_num_to_track=max_frames)
     # 3. hmr upon masks
     with torch.autocast("cuda", enabled=False):
         predictor.on_4d_generation()
@@ -774,6 +775,7 @@ if __name__ == "__main__":
     parser.add_argument("--input_video", type=str, required=True, help="Path to the input video (either *.mp4 or a directory containing image sequences)")
     parser.add_argument("--track_ids", type=str, default=None, help="Comma-separated detection indices to track (0-based), e.g. '1,3'. Default: track all.")
     parser.add_argument("--vis_det", action="store_true", help="Only run detection, visualize bboxes with index labels, then exit.")
+    parser.add_argument("--max_frames", type=int, default=None, help="Max number of frames to track. Default: all frames.")
     args = parser.parse_args()
 
     input_path = args.input_video
