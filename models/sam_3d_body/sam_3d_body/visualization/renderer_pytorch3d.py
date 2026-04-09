@@ -249,6 +249,7 @@ class PyTorch3DBatchRenderer:
 
         T = cam_translations.clone()
         T[:, 0] *= -1.0  # flip x for PyTorch3D left-handed screen x
+        T[:, 1] *= -1.0  # flip y: PyTorch3D y_cam up but screen y down
 
         R = torch.eye(3, device=self.device).unsqueeze(0).expand(B, -1, -1)
         fl = focal_lengths.unsqueeze(1).expand(-1, 2)  # (B, 2)  fx == fy
