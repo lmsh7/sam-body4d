@@ -187,7 +187,7 @@ class NvDiffrastBatchRenderer:
         for i in range(len(verts_list)):
             out = self._render_uniform_batch(
                 [verts_list[i]],
-                faces_list[i].to(torch.int32),
+                faces_list[i][:, [0, 2, 1]].contiguous().to(torch.int32),
                 [colors_list[i]],
                 focal_lengths[i:i+1],
                 cam_translations[i:i+1],
@@ -219,7 +219,10 @@ class NvDiffrastBatchRenderer:
         )
 
         if uniform:
-            faces_i32 = faces_list[0].to(torch.int32)
+            # Reverse winding order: the Y-flip in vis_utils.py turns CCW
+            # faces into CW.  nvdiffrast culls CW (back-facing), so we swap
+            # columns 1 & 2 to restore CCW front-face orientation.
+            faces_i32 = faces_list[0][:, [0, 2, 1]].contiguous().to(torch.int32)
             out = self._render_uniform_batch(
                 verts_list, faces_i32, colors_list,
                 focal_lengths, cam_translations, H, W, bg_images,
