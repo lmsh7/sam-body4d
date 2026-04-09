@@ -19,6 +19,7 @@ from pytorch3d.renderer import (
     TexturesVertex,
     BlendParams,
 )
+from pytorch3d.renderer.lighting import DirectionalLights as _DLBase
 
 
 def _raymond_light_directions() -> torch.Tensor:
@@ -41,6 +42,59 @@ def _raymond_light_directions() -> torch.Tensor:
     return torch.tensor(directions, dtype=torch.float32)  # (3, 3)
 
 
+class MultiDirectionalLights(_DLBase):
+    """DirectionalLights that sums contributions from *N* directions.
+
+    PyTorch3D's built-in ``DirectionalLights`` only supports a single
+    direction per batch element.  This subclass stores *N* directions
+    and overrides ``diffuse()`` / ``specular()`` to accumulate all of
+    them, matching the multi-light setup in pyrender.
+    """
+
+    def __init__(
+        self,
+        directions: torch.Tensor,          # (N, 3) — N light directions
+        ambient_color: Tuple = (0.3, 0.3, 0.3),
+        diffuse_color: Tuple = (1.0, 1.0, 1.0),
+        specular_color: Tuple = (0.0, 0.0, 0.0),
+        device: torch.device = None,
+    ):
+        # Initialize the parent with a dummy single direction.
+        # We override diffuse/specular, so the parent's direction is unused.
+        super().__init__(
+            ambient_color=(ambient_color,),
+            diffuse_color=(diffuse_color,),
+            specular_color=(specular_color,),
+            direction=((0.0, 0.0, 1.0),),
+            device=device or directions.device,
+        )
+        # Store all N directions: (N, 3)
+        self._multi_directions = directions.to(self.device)
+
+    def diffuse(self, normals, points=None) -> torch.Tensor:
+        """Sum diffuse from all N directional lights.
+
+        normals: (B, ..., 3)
+        returns: (B, ..., 3) diffuse color contribution
+        """
+        # diffuse_color from parent: (1, 3) or (B, 3)
+        color = self.diffuse_color  # (1, 3)
+        total = torch.zeros_like(normals[..., :3])
+
+        for i in range(self._multi_directions.shape[0]):
+            # direction toward light: (3,)
+            d = self._multi_directions[i]
+            # d dot normals => (B, ..., 1)
+            cos_angle = (normals * d).sum(dim=-1, keepdim=True).clamp(min=0.0)
+            total = total + color * cos_angle
+
+        return total
+
+    def specular(self, normals, points, camera_position, shininess) -> torch.Tensor:
+        # No specular in our raymond lights setup
+        return torch.zeros_like(normals[..., :3])
+
+
 class PyTorch3DBatchRenderer:
     """Persistent GPU mesh renderer using PyTorch3D.
 
@@ -58,9 +112,7 @@ class PyTorch3DBatchRenderer:
         self.device = device
 
         # Raymond directional lights (3 directions, white, intensity 1.0)
-        light_dirs = _raymond_light_directions().to(device)  # (3, 3)
-        # DirectionalLights expects (1, N, 3) for N lights
-        self._light_directions = light_dirs.unsqueeze(0)  # (1, 3, 3)
+        self._light_directions = _raymond_light_directions().to(device)  # (3, 3)
 
         # Cache rasterizer settings keyed by (H, W)
         self._raster_cache: dict[Tuple[int, int], RasterizationSettings] = {}
@@ -80,21 +132,17 @@ class PyTorch3DBatchRenderer:
             )
         return self._raster_cache[key]
 
-    def _build_lights(self, batch_size: int) -> DirectionalLights:
-        """Build DirectionalLights for *batch_size* meshes.
+    def _build_lights(self) -> MultiDirectionalLights:
+        """Build multi-directional raymond lights.
 
-        PyTorch3D's ``DirectionalLights`` sums contributions from all
-        supplied direction vectors.  We pass 3 directions (raymond),
-        each with diffuse=1 and no specular, plus ambient=(0.3, 0.3, 0.3)
-        matching the pyrender scene.
+        3 directional lights at elevation pi/6, azimuths 0/120/240 deg,
+        white color intensity 1.0 each, ambient (0.3, 0.3, 0.3).
         """
-        # Expand directions to (B, 3, 3)
-        dirs = self._light_directions.expand(batch_size, -1, -1)
-        return DirectionalLights(
-            ambient_color=((0.3, 0.3, 0.3),),
-            diffuse_color=((1.0, 1.0, 1.0),),
-            specular_color=((0.0, 0.0, 0.0),),
-            direction=dirs,
+        return MultiDirectionalLights(
+            directions=self._light_directions,
+            ambient_color=(0.3, 0.3, 0.3),
+            diffuse_color=(1.0, 1.0, 1.0),
+            specular_color=(0.0, 0.0, 0.0),
             device=self.device,
         )
 
@@ -120,14 +168,14 @@ class PyTorch3DBatchRenderer:
         ----------
         verts_list : list of (V_i, 3) float32 tensors on *device*
             Per-mesh vertices.  Vertices should already include the
-            180° X-flip (``y, z *= -1``) applied by the caller.
+            180-deg X-flip (``y, z *= -1``) applied by the caller.
         faces_list : list of (F_i, 3) int64 tensors on *device*
         colors_list : list of (V_i, 3) float32 RGB [0, 1] tensors on *device*
         focal_lengths : (B,) float32 tensor
         cam_translations : (B, 3) float32 tensor
             Same convention as pyrender: ``cam_t`` with ``[0] *= -1``
             already applied by caller.
-        image_size : (H, W) — all images in this call share the same size.
+        image_size : (H, W) -- all images in this call share the same size.
         bg_images : (B, H, W, 3) float32 [0, 1] or *None* for white bg.
         sub_batch_size : max meshes per GPU pass.
 
@@ -185,7 +233,7 @@ class PyTorch3DBatchRenderer:
         #
         # The pyrender code does:
         #   camera_translation[0] *= -1   (caller already did this)
-        #   mesh gets 180° X-flip         (caller already did this on verts)
+        #   mesh gets 180-deg X-flip      (caller already did this on verts)
         #
         # In PyTorch3D screen coords the x-axis points right and y-axis
         # points down, which matches OpenCV / pyrender after the X-flip.
@@ -216,7 +264,7 @@ class PyTorch3DBatchRenderer:
 
         # --- Rasterizer + Shader ---
         raster_settings = self._get_raster_settings(H, W)
-        lights = self._build_lights(B)
+        lights = self._build_lights()
 
         renderer = MeshRenderer(
             rasterizer=MeshRasterizer(cameras=cameras, raster_settings=raster_settings),
