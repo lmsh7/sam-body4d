@@ -138,10 +138,13 @@ def _prepare_combined_mesh(
     fake_cam_t = (np.max(last_2, axis=0) + np.min(last_2, axis=0)) / 2.0
     verts_np = verts_np - fake_cam_t
 
-    # No 180° X-flip for PyTorch3D — camera looks along +Z,
-    # mesh is already in the correct half-space.
-    # cam_t passed directly (no x-negation, handled by renderer).
+    # Flip Y to convert from HMR convention (Y-up) to PyTorch3D screen
+    # convention where y_screen = -f*Y/Z + cy (positive Y → screen top).
+    # Without this flip the rendering is upside-down.
+    verts_np[:, 1] *= -1.0
+
     cam_t = fake_cam_t.copy()
+    cam_t[1] *= -1.0  # flip cam_t Y to match vertex flip
 
     focal = float(outputs[-1]["focal_length"])
 
@@ -245,8 +248,9 @@ def batch_render_individual(
             continue
         for pid, person_output in enumerate(outputs):
             v = person_output["pred_vertices"].copy()
-            # No 180° X-flip for PyTorch3D
+            v[:, 1] *= -1.0  # flip Y for PyTorch3D screen convention
             cam_t = person_output["pred_cam_t"].copy()
+            cam_t[1] *= -1.0  # match vertex Y flip
 
             c_rgb = np.array(color_list[id_current[pid] + 4], dtype=np.float32) / 255.0
             c = np.broadcast_to(c_rgb, (v.shape[0], 3)).copy()
