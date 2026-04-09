@@ -535,7 +535,7 @@ def _build_animated_glb(meshes: List[trimesh.Trimesh], output_path: str, fps: fl
             pygltflib.AnimationSampler(
                 input=acc_time,
                 output=acc_weights,
-                interpolation=pygltflib.STEP,
+                interpolation="STEP",
             )
         ],
         channels=[
