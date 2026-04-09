@@ -1,3 +1,4 @@
+
 """
 Utility functions for SAM 3D Body demo notebook
 """
@@ -637,8 +638,114 @@ def process_image_with_mask(estimator, image_path: str, mask_path: str, idx_path
     """
     Process image with external mask input.
 
-    Note: The refactored code requires bboxes to be provided along with masks.
-    This function automatically computes bboxes from the mask.
+    When all frames are non-occluded, batches all people together for a single
+    process_frames call (backbone runs once instead of once per person).
+    Falls back to per-person processing when occlusion completion is active.
+    """
+    n_frames = len(image_path)
+    obj_ids = sorted(map(int, occ_dict.keys()))
+
+    # Check if any frame has occlusion for any person
+    all_no_occ = all(
+        occ_dict[oid][i] == 1
+        for oid in obj_ids
+        for i in range(n_frames)
+    )
+
+    if not all_no_occ:
+        return _process_image_with_mask_per_person(
+            estimator, image_path, mask_path, idx_path, idx_dict,
+            mhr_shape_scale_dict, occ_dict, batch_kps=batch_kps,
+            kps_id=kps_id, cam_int=cam_int, iou_dict=iou_dict,
+            predictor=predictor,
+        )
+
+    # ---- Batched path: aggregate all people per frame ----
+    image_batch = []
+    bbox_batch = []
+    mask_batch = []
+    id_batch = []
+    kps_batch_list = []
+    empty_frame_list = []
+
+    for i in range(n_frames):
+        mask_img = np.array(Image.open(mask_path[i]).convert('P'))
+        H, W = mask_img.shape
+
+        frame_bboxes = []
+        frame_masks = []
+        frame_ids = []
+        frame_kps = []
+
+        for obj_id in obj_ids:
+            mask_binary = np.zeros_like(mask_img, dtype=np.uint8)
+            mask_binary[mask_img == obj_id] = 255
+
+            # Mute objects near image margin
+            mask_cp = mask_binary.copy()
+            margin_h, margin_w = int(H * 0.05), int(W * 0.05)
+            mask_cp[:margin_h, :] = mask_cp[-margin_h:, :] = 0
+            mask_cp[:, :margin_w] = mask_cp[:, -margin_w:] = 0
+            if mask_cp.max() == 0:
+                mask_binary = mask_cp
+
+            if mask_binary.max() > 0:
+                coords = cv2.findNonZero(mask_binary)
+                x, y, w, h = cv2.boundingRect(coords)
+                frame_bboxes.append(np.array([[x, y, x + w, y + h]], dtype=np.float32))
+                frame_masks.append(mask_binary)
+                frame_ids.append(obj_id)
+                if batch_kps is not None:
+                    frame_kps.append(batch_kps[obj_id - 1][i])
+            # else: invalid mask — process_frames padding will fill this slot
+
+        if len(frame_ids) == 0:
+            empty_frame_list.append(i)
+            continue
+
+        image_batch.append(image_path[i])
+        bbox_batch.append(np.stack(frame_bboxes, axis=0).squeeze(axis=1))  # (N, 4)
+        mask_batch.append(np.stack(frame_masks, axis=0))              # (N, H, W)
+        id_batch.append(frame_ids)
+        if batch_kps is not None:
+            kps_batch_list.append(np.stack(frame_kps, axis=0))
+
+    if len(empty_frame_list) > 0:
+        for oid in obj_ids:
+            for i in sorted(empty_frame_list, reverse=True):
+                occ_dict[oid].pop(i)
+
+    if batch_kps is None:
+        kps_batch_list = None
+
+    all_outputs = estimator.process_frames(
+        image_batch, bboxes=bbox_batch, masks=mask_batch,
+        id_batch=id_batch, idx_path={}, idx_dict={},
+        mhr_shape_scale_dict=mhr_shape_scale_dict,
+        kps_batch=kps_batch_list, occ_dict=None,
+        use_mask=True, kps_id=kps_id, cam_int=cam_int,
+    )
+
+    # Reconstruct output with empty frames inserted back
+    final_outputs = []
+    final_ids = []
+    out_idx = 0
+    for i in range(n_frames):
+        if i in empty_frame_list:
+            final_outputs.append([])
+            final_ids.append([])
+        else:
+            final_outputs.append(all_outputs[out_idx])
+            final_ids.append(id_batch[out_idx])
+            out_idx += 1
+
+    return final_outputs, final_ids, empty_frame_list
+
+
+def _process_image_with_mask_per_person(estimator, image_path, mask_path, idx_path, idx_dict, mhr_shape_scale_dict, occ_dict, batch_kps=None, kps_id=None, cam_int=None, iou_dict=None, predictor=None):
+    """
+    Original per-person processing path. Used when occlusion completion is
+    active and different people may use different reference images per frame.
     """
     n_frames = len(image_path)
     obj_ids = sorted(map(int, occ_dict.keys()))
@@ -681,9 +788,9 @@ def process_image_with_mask(estimator, image_path: str, mask_path: str, idx_path
 
             if occ_idx[i] == 0:
                 if kps_id is not None:
-                    mask_com = np.array(Image.open(os.path.join(idx_path[obj_id]['masks'], f"{kps_id[0]:08d}.png")).convert('P'))     
+                    mask_com = np.array(Image.open(os.path.join(idx_path[obj_id]['masks'], f"{kps_id[0]:08d}.png")).convert('P'))
                 else:
-                    mask_com = np.array(Image.open(os.path.join(idx_path[obj_id]['masks'], f"{i:08d}.png")).convert('P')) 
+                    mask_com = np.array(Image.open(os.path.join(idx_path[obj_id]['masks'], f"{i:08d}.png")).convert('P'))
                 zero_mask = np.zeros_like(mask_com)
                 zero_mask[mask_com==obj_id] = 255
                 mask_binary = zero_mask.astype(np.uint8)
@@ -700,7 +807,7 @@ def process_image_with_mask(estimator, image_path: str, mask_path: str, idx_path
                 _occ_bbox_list.append(bbox)
                 if batch_kps is not None:
                     _occ_kp_list.append(batch_kps[obj_id-1][i])  # N x 3
-                
+
                 if len(_occ_bbox_list) == 0:
                     _occ_empty_frame_list.append(i)
                 else:
@@ -733,7 +840,7 @@ def process_image_with_mask(estimator, image_path: str, mask_path: str, idx_path
                 # Compute bounding box from mask (required by refactored code)
                 # Find all non-zero pixels in the mask
                 coords = cv2.findNonZero(mask_binary)
-                
+
                 if mask_binary.max() > 0:
                     no_occ_id_current.append(obj_id)
 
@@ -780,7 +887,7 @@ def process_image_with_mask(estimator, image_path: str, mask_path: str, idx_path
             no_occ_outputs = estimator.process_frames(no_occ_image_batch, bboxes=no_occ_bbox_batch, masks=no_occ_mask_batch, id_batch=[[1] for idb in range(len(no_occ_image_batch))], idx_path={}, idx_dict={}, mhr_shape_scale_dict=mhr_shape_scale_dict, kps_batch=no_occ_kps_batch, occ_dict=None, use_mask=True, kps_id=kps_id, cam_int=cam_int)
         if len(_occ_image_batch) > 0:
             _occ_outputs = estimator.process_frames(_occ_image_batch, bboxes=_occ_bbox_batch, masks=_occ_mask_batch, id_batch=[[1] for idb in range(len(_occ_image_batch))], idx_path={}, idx_dict={}, mhr_shape_scale_dict=mhr_shape_scale_dict, kps_batch=_occ_kps_batch, occ_dict=None, use_mask=True, kps_id=kps_id, _occ_image_batch_ori=_occ_image_batch_ori, cam_int=cam_int)
-        
+
         oid_outputs = []
         ia, ib = 0, 0
         for oi in occ_idx:
@@ -790,7 +897,7 @@ def process_image_with_mask(estimator, image_path: str, mask_path: str, idx_path
             else:
                 oid_outputs.append(_occ_outputs[ib])
                 ib += 1
-        
+
         mask_outputs_dict[obj_id] = oid_outputs
 
     final_outputs = []
