@@ -37,6 +37,8 @@ from models.diffusion_vas.demo import init_amodal_segmentation_model, init_rgb_m
 
 import torch
 import concurrent.futures
+
+_VIS_WORKERS = int(os.environ.get("SAM_VIS_WORKERS", "4"))
 # select the device for computation
 if torch.cuda.is_available():
     device = torch.device("cuda")
@@ -502,6 +504,7 @@ class OfflineApp:
 
             mask_outputs, id_batch, empty_frame_list = process_image_with_mask(self.sam3_3d_body_model, batch_images, batch_masks, idx_path, idx_dict, mhr_shape_scale_dict, occ_dict)
 
+            frame_args = []
             num_empth_ids = 0
             for frame_id in range(len(batch_images)):
                 image_path = batch_images[frame_id]
@@ -512,6 +515,10 @@ class OfflineApp:
                 else:
                     mask_output = mask_outputs[frame_id-num_empth_ids]
                     id_current = id_batch[frame_id-num_empth_ids]
+                frame_args.append((image_path, mask_output, id_current))
+
+            def _render_and_save(args):
+                image_path, mask_output, id_current = args
                 img = cv2.imread(image_path)
                 rend_img = visualize_sample_together(img, mask_output, self.sam3_3d_body_model.faces, id_current)
                 cv2.imwrite(
@@ -539,6 +546,14 @@ class OfflineApp:
                         image_path=image_path,
                         id_current=id_current,
                     )
+
+            if _VIS_WORKERS > 1 and len(frame_args) > 1:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(_VIS_WORKERS, len(frame_args))) as pool:
+                    for _ in pool.map(_render_and_save, frame_args):
+                        pass
+            else:
+                for args in frame_args:
+                    _render_and_save(args)
 
             print(f"  [TIMER] batch {i//batch_size} total: {time.time() - _t_batch_start:.2f}s")
 
