@@ -563,8 +563,10 @@ class OfflineApp:
                     image_path = image_paths[frame_idx]
                     frame_stem = os.path.basename(image_path)[:-4]
                     cv2.imwrite(f"{self.OUTPUT_DIR}/rendered_frames/{frame_stem}.jpg", combined_imgs[frame_idx])
+                    id_current = ids_by_frame[frame_idx]
                     for pi, pimg in enumerate(individual_imgs[frame_idx]):
-                        cv2.imwrite(f"{self.OUTPUT_DIR}/rendered_frames_individual/{pi+1}/{frame_stem}_{pi+1}.jpg", pimg)
+                        oid = id_current[pi] if id_current is not None else pi + 1
+                        cv2.imwrite(f"{self.OUTPUT_DIR}/rendered_frames_individual/{oid}/{frame_stem}_{oid}.jpg", pimg)
                     if _mesh_export_enabled and outputs_by_frame[frame_idx] is not None:
                         save_mesh_results(
                             outputs=outputs_by_frame[frame_idx],
@@ -603,8 +605,9 @@ class OfflineApp:
                     )
                     rend_img_list = visualize_sample(img, mask_output, self.sam3_3d_body_model.faces, id_current)
                     for ri, rend_img in enumerate(rend_img_list):
+                        oid = id_current[ri] if id_current is not None else ri + 1
                         cv2.imwrite(
-                            f"{self.OUTPUT_DIR}/rendered_frames_individual/{ri+1}/{os.path.basename(image_path)[:-4]}_{ri+1}.jpg",
+                            f"{self.OUTPUT_DIR}/rendered_frames_individual/{oid}/{os.path.basename(image_path)[:-4]}_{oid}.jpg",
                             rend_img.astype(np.uint8),
                         )
                     if _mesh_export_enabled:

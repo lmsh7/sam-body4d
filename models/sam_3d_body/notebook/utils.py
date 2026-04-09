@@ -236,14 +236,15 @@ def save_mesh_results(
         tmesh = renderer.vertices_to_trimesh(
             person_output["pred_vertices"], person_output["pred_cam_t"], color
         )
+        oid = id_current[pid]
         frame_stem = os.path.basename(image_path)[:-4]
         if "ply" in export_formats:
-            tmesh.export(f"{save_dir}/{pid+1}/{frame_stem}.ply")
+            tmesh.export(f"{save_dir}/{oid}/{frame_stem}.ply")
         if "glb" in export_formats:
-            tmesh.export(f"{save_dir}/{pid+1}/{frame_stem}.glb", file_type="glb")
+            tmesh.export(f"{save_dir}/{oid}/{frame_stem}.glb", file_type="glb")
 
         focal_length = {'focal_length': person_output["focal_length"].item(), 'camera': [float(x) for x in person_output['pred_cam_t']]}
-        with open(f"{focal_dir}/{pid+1}/{os.path.basename(image_path)[:-4]}.json", "w") as f:
+        with open(f"{focal_dir}/{oid}/{os.path.basename(image_path)[:-4]}.json", "w") as f:
             json.dump(focal_length, f, indent=4)
 
 
@@ -312,7 +313,8 @@ def save_skeleton_results(
             "bbox": _to_list(person_output["bbox"]),
         }
 
-        out_path = f"{skeleton_dir}/{pid+1}/{frame_name}.json"
+        oid = id_current[pid]
+        out_path = f"{skeleton_dir}/{oid}/{frame_name}.json"
         with open(out_path, "w") as f:
             json.dump(skeleton_data, f)
 
