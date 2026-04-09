@@ -53,11 +53,22 @@ class NvDiffrastBatchRenderer:
     def _build_projection(
         self, focal_lengths: torch.Tensor, H: int, W: int,
     ) -> torch.Tensor:
-        """Build (B, 4, 4) OpenGL-style projection matrices.
+        """Build (B, 4, 4) projection matrices for nvdiffrast.
 
-        Uses standard perspective projection. Y is NOT negated here;
-        we flip the output image after rasterization instead (avoids
-        winding-order issues with backface culling).
+        The input vertices live in a coordinate system where the camera
+        looks along **+Z** (HMR convention: cam_t.z is positive depth).
+        Standard OpenGL looks along -Z, so we negate Z in the matrix to
+        map positive-Z depth into the valid clip-space range.
+
+        Concretely, for a camera-space point (X, Y, Z) with Z > 0:
+          x_clip =  (2f/W) * X
+          y_clip =  (2f/H) * Y
+          z_clip =  (f+n)/(f-n) * Z  - 2fn/(f-n)   (maps [n,f] → [-1,1])
+          w_clip =  Z                                (positive)
+
+        After perspective divide, nvdiffrast rasterises in the cube
+        [-1,1]^3.  We flip the rendered image vertically afterwards to
+        go from OpenGL Y-up to screen Y-down.
         """
         B = focal_lengths.shape[0]
         n, f = self._near, self._far
@@ -65,9 +76,9 @@ class NvDiffrastBatchRenderer:
         proj = torch.zeros(B, 4, 4, dtype=torch.float32, device=self.device)
         proj[:, 0, 0] = 2.0 * focal_lengths / W
         proj[:, 1, 1] = 2.0 * focal_lengths / H
-        proj[:, 2, 2] = -(f + n) / (f - n)
+        proj[:, 2, 2] = (f + n) / (f - n)
         proj[:, 2, 3] = -2.0 * f * n / (f - n)
-        proj[:, 3, 2] = -1.0
+        proj[:, 3, 2] = 1.0
         return proj
 
     def _compute_vertex_normals(
