@@ -642,7 +642,7 @@ def display_results_grid(
     plt.show()
 
 
-def process_image_with_mask(estimator, image_path: str, mask_path: str, idx_path, idx_dict, mhr_shape_scale_dict, occ_dict, batch_kps=None, kps_id=None, cam_int=None, iou_dict=None, predictor=None, inference_type="full"):
+def process_image_with_mask(estimator, image_path: str, mask_path: str, idx_path, idx_dict, mhr_shape_scale_dict, occ_dict, batch_kps=None, kps_id=None, cam_int=None, iou_dict=None, predictor=None, inference_type="full", global_obj_ids=None):
     """
     Process image with external mask input.
 
@@ -733,6 +733,7 @@ def process_image_with_mask(estimator, image_path: str, mask_path: str, idx_path
         kps_batch=kps_batch_list, occ_dict=None,
         use_mask=True, kps_id=kps_id, cam_int=cam_int,
         inference_type=inference_type,
+        global_obj_ids=global_obj_ids,
     )
 
     # Reconstruct output with empty frames inserted back

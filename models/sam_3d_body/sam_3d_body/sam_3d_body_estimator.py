@@ -75,14 +75,15 @@ class SAM3DBodyEstimator:
         use_mask: bool = False,
         inference_type: str = "full",
         id_batch: Optional[List[List[int]]] = None,
-        idx_path=None, 
+        idx_path=None,
         idx_dict=None,
-        mhr_shape_scale_dict=None, 
-        occ_dict=None, 
-        kps_batch=None, 
+        mhr_shape_scale_dict=None,
+        occ_dict=None,
+        kps_batch=None,
         flip=False,
         kps_id=None,
         _occ_image_batch_ori=None,
+        global_obj_ids=None,
     ):
         """
         Perform model prediction in top-down format: assuming input is a full image.
@@ -101,6 +102,18 @@ class SAM3DBodyEstimator:
         """
 
         max_N = max(t.shape[0] for t in bboxes)
+
+        # Build global sorted obj_id list.  When global_obj_ids is supplied
+        # (from the caller's out_obj_ids), use it so that slot assignment is
+        # identical across batches and mhr_shape_scale_dict stays consistent.
+        if global_obj_ids is not None:
+            _all_ids = sorted(global_obj_ids)
+        elif id_batch is not None:
+            _all_ids = sorted({oid for frame_ids in id_batch for oid in frame_ids})
+        else:
+            _all_ids = list(range(1, max_N + 1))
+        max_N = len(_all_ids)
+        _id_to_slot = {oid: slot for slot, oid in enumerate(_all_ids)}
 
         # clear all cached results
         self.batch = None
@@ -190,15 +203,15 @@ class SAM3DBodyEstimator:
                 masks, masks_score = None, None
 
         #################### Construct batch data samples ####################
-            if len(boxes) < max_N:  # padding if no objects detected
+            if len(boxes) < max_N:  # padding if some objects missing in this frame
                 padding_box = boxes[0]
                 padding_mask = masks_binary[0]
                 boxes_to_cat = []
                 masks_to_cat = []
-                current_id_batch = id_batch[i]
+                current_id_batch = id_batch[i] if id_batch is not None else list(range(1, len(boxes) + 1))
                 cid = 0
-                for current_id in range(max_N):
-                    if (current_id+1) in current_id_batch:
+                for oid in _all_ids:
+                    if oid in current_id_batch:
                         boxes_to_cat.append(boxes[cid])
                         masks_to_cat.append(masks_binary[cid])
                         cid += 1
@@ -207,7 +220,7 @@ class SAM3DBodyEstimator:
                         masks_to_cat.append(padding_mask)
                 boxes = np.stack(boxes_to_cat, axis=0)
                 masks_binary = np.stack(masks_to_cat, axis=0)
-                # e.g., 1 2 4 5 6 -> 1 2 [1] 4 5 6
+                # e.g., ids [2,3,5] with frame having [2,5] -> [2, pad, 5]
             img_com_dict = {}
             for idx_k, (idx_start,idx_end) in idx_dict.items():
                 if i >= idx_start and i < idx_end:
@@ -216,7 +229,7 @@ class SAM3DBodyEstimator:
                     else:
                         img_com = load_image(os.path.join(idx_path[idx_k]['images'], f"{i:08d}.jpg"), backend="cv2", image_format="bgr")
                     img_com = cv2.cvtColor(img_com, cv2.COLOR_BGR2RGB)
-                    img_com_dict[idx_k-1] = img_com
+                    img_com_dict[_id_to_slot.get(idx_k, idx_k-1)] = img_com
 
             if not use_mask:
                 masks_binary = None
@@ -320,10 +333,10 @@ class SAM3DBodyEstimator:
         
         batch_size = batch_dict["img"].shape[0]
         num_objects = batch_dict["img"].shape[1]
-        for b_idx in range(batch_dict["img"].shape[0]):    # batch 
+        for b_idx in range(batch_dict["img"].shape[0]):    # batch
             all_out = []
-            for idx in range(batch_dict["img"].shape[1]):    # person
-                if (idx+1) not in id_batch[b_idx]:
+            for idx in range(batch_dict["img"].shape[1]):    # person slot
+                if _all_ids[idx] not in id_batch[b_idx]:
                     continue
                 all_out.append(
                     {

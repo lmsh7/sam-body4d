@@ -1088,7 +1088,7 @@ def on_4d_generation(video_path: str):
             print(f"  [TIMER] occlusion total: {time.time() - _t_occ_start:.2f}s")
 
         _t_hmr_start = time.time()
-        mask_outputs, id_batch, empty_frame_list = process_image_with_mask(sam3_3d_body_model, batch_images, batch_masks, idx_path, idx_dict, mhr_shape_scale_dict, occ_dict, cam_int=cam_int, iou_dict=iou_dict, predictor=predictor)
+        mask_outputs, id_batch, empty_frame_list = process_image_with_mask(sam3_3d_body_model, batch_images, batch_masks, idx_path, idx_dict, mhr_shape_scale_dict, occ_dict, cam_int=cam_int, iou_dict=iou_dict, predictor=predictor, global_obj_ids=RUNTIME['out_obj_ids'])
         print(f"  [TIMER] HMR (process_image_with_mask): {time.time() - _t_hmr_start:.2f}s")
 
         _t_vis_start = time.time()
