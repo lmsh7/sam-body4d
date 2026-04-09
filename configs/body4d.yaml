@@ -24,6 +24,13 @@ sam_3d_body:
   detector_path: ""
   segmentor_path: ""
 
+  rendering:
+    backend: "pytorch3d"       # "pytorch3d" | "pyrender"
+  mesh_export:
+    enable: true               # false to skip all per-frame mesh I/O
+    formats: ["glb"]           # subset of ["ply", "glb"]
+    animated_glb: true         # aggregate animated GLB at the end
+
   # Fast-SAM-3D-Body acceleration options (all disabled by default)
   fast_mode:
     enable: false              # master switch

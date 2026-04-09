@@ -31,7 +31,7 @@ from utils import draw_point_marker, mask_painter, images_to_mp4, DAVIS_PALETTE,
 
 from models.sam_3d_body.sam_3d_body import load_sam_3d_body, SAM3DBodyEstimator
 from models.sam_3d_body.notebook.utils import process_image_with_mask, save_mesh_results, save_skeleton_results, aggregate_skeleton_npz, aggregate_mesh_glb
-from models.sam_3d_body.tools.vis_utils import visualize_sample_together, visualize_sample
+from models.sam_3d_body.tools.vis_utils import visualize_sample_together, visualize_sample, batch_render_combined, batch_render_individual
 from models.diffusion_vas.demo import init_amodal_segmentation_model, init_rgb_model, init_depth_model, load_and_transform_masks, load_and_transform_rgbs, rgb_to_depth
 
 import torch
@@ -1020,6 +1020,19 @@ def on_4d_generation(video_path: str):
 
     num_workers = len(diffusion_workers)
 
+    # Initialize rendering backend
+    _render_backend = CONFIG.get("sam_3d_body", {}).get("rendering", {}).get("backend", "pyrender")
+    _mesh_cfg = CONFIG.get("sam_3d_body", {}).get("mesh_export", {})
+    _mesh_export_enabled = _mesh_cfg.get("enable", True)
+    _mesh_export_formats = tuple(_mesh_cfg.get("formats", ["ply", "glb"]))
+    _animated_glb = _mesh_cfg.get("animated_glb", True)
+
+    gpu_renderer = None
+    if _render_backend == "pytorch3d":
+        from sam_3d_body.visualization.renderer_pytorch3d import PyTorch3DBatchRenderer
+        gpu_renderer = PyTorch3DBatchRenderer(device=device)
+        print(f"[INFO] Using PyTorch3D GPU batch renderer on {device}")
+
     for i in tqdm(range(0, n, batch_size)):
         _t_batch_start = time.time()
         batch_images = images_list[i:i + batch_size]
@@ -1075,56 +1088,98 @@ def on_4d_generation(video_path: str):
         print(f"  [TIMER] HMR (process_image_with_mask): {time.time() - _t_hmr_start:.2f}s")
 
         _t_vis_start = time.time()
-        frame_args = []
+
+        # Build per-frame output lists
+        outputs_by_frame = []
+        ids_by_frame = []
+        image_paths = []
         num_empth_ids = 0
         for frame_id in range(len(batch_images)):
             image_path = batch_images[frame_id]
             if frame_id in empty_frame_list:
-                mask_output = None
-                id_current = None
+                outputs_by_frame.append(None)
+                ids_by_frame.append(None)
                 num_empth_ids += 1
             else:
-                mask_output = mask_outputs[frame_id-num_empth_ids]
-                id_current = id_batch[frame_id-num_empth_ids]
-            frame_args.append((image_path, mask_output, id_current))
+                outputs_by_frame.append(mask_outputs[frame_id-num_empth_ids])
+                ids_by_frame.append(id_batch[frame_id-num_empth_ids])
+            image_paths.append(image_path)
 
-        def _render_and_save(args):
-            image_path, mask_output, id_current = args
-            img = cv2.imread(image_path)
-            rend_img = visualize_sample_together(img, mask_output, sam3_3d_body_model.faces, id_current)
-            cv2.imwrite(
-                f"{OUTPUT_DIR}/rendered_frames/{os.path.basename(image_path)[:-4]}.jpg",
-                rend_img.astype(np.uint8),
-            )
-            rend_img_list = visualize_sample(img, mask_output, sam3_3d_body_model.faces, id_current)
-            for ri, rend_img in enumerate(rend_img_list):
+        if gpu_renderer is not None:
+            # ---- PyTorch3D GPU batch rendering path ----
+            imgs = [cv2.imread(p) for p in image_paths]
+            combined_imgs = batch_render_combined(imgs, outputs_by_frame, sam3_3d_body_model.faces, ids_by_frame, gpu_renderer)
+            individual_imgs = batch_render_individual(imgs, outputs_by_frame, sam3_3d_body_model.faces, ids_by_frame, gpu_renderer)
+
+            def _save_io(frame_idx):
+                image_path = image_paths[frame_idx]
+                frame_stem = os.path.basename(image_path)[:-4]
+                cv2.imwrite(f"{OUTPUT_DIR}/rendered_frames/{frame_stem}.jpg", combined_imgs[frame_idx])
+                for pi, pimg in enumerate(individual_imgs[frame_idx]):
+                    cv2.imwrite(f"{OUTPUT_DIR}/rendered_frames_individual/{pi+1}/{frame_stem}_{pi+1}.jpg", pimg)
+                if _mesh_export_enabled and outputs_by_frame[frame_idx] is not None:
+                    save_mesh_results(
+                        outputs=outputs_by_frame[frame_idx],
+                        faces=sam3_3d_body_model.faces,
+                        save_dir=f"{OUTPUT_DIR}/mesh_4d_individual",
+                        focal_dir=f"{OUTPUT_DIR}/focal_4d_individual",
+                        image_path=image_path,
+                        id_current=ids_by_frame[frame_idx],
+                        export_formats=_mesh_export_formats,
+                    )
+                if RUNTIME.get('smpl_export', False) and outputs_by_frame[frame_idx] is not None:
+                    save_skeleton_results(
+                        outputs=outputs_by_frame[frame_idx],
+                        skeleton_dir=f"{OUTPUT_DIR}/skeleton_4d_individual",
+                        image_path=image_path,
+                        id_current=ids_by_frame[frame_idx],
+                    )
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=_VIS_WORKERS) as pool:
+                list(pool.map(_save_io, range(len(image_paths))))
+        else:
+            # ---- Legacy PyRender path ----
+            frame_args = list(zip(image_paths, outputs_by_frame, ids_by_frame))
+
+            def _render_and_save(args):
+                image_path, mask_output, id_current = args
+                img = cv2.imread(image_path)
+                rend_img = visualize_sample_together(img, mask_output, sam3_3d_body_model.faces, id_current)
                 cv2.imwrite(
-                    f"{OUTPUT_DIR}/rendered_frames_individual/{ri+1}/{os.path.basename(image_path)[:-4]}_{ri+1}.jpg",
+                    f"{OUTPUT_DIR}/rendered_frames/{os.path.basename(image_path)[:-4]}.jpg",
                     rend_img.astype(np.uint8),
                 )
-            save_mesh_results(
-                outputs=mask_output,
-                faces=sam3_3d_body_model.faces,
-                save_dir=f"{OUTPUT_DIR}/mesh_4d_individual",
-                focal_dir=f"{OUTPUT_DIR}/focal_4d_individual",
-                image_path=image_path,
-                id_current=id_current,
-            )
-            if RUNTIME.get('smpl_export', False):
-                save_skeleton_results(
-                    outputs=mask_output,
-                    skeleton_dir=f"{OUTPUT_DIR}/skeleton_4d_individual",
-                    image_path=image_path,
-                    id_current=id_current,
-                )
+                rend_img_list = visualize_sample(img, mask_output, sam3_3d_body_model.faces, id_current)
+                for ri, rend_img in enumerate(rend_img_list):
+                    cv2.imwrite(
+                        f"{OUTPUT_DIR}/rendered_frames_individual/{ri+1}/{os.path.basename(image_path)[:-4]}_{ri+1}.jpg",
+                        rend_img.astype(np.uint8),
+                    )
+                if _mesh_export_enabled:
+                    save_mesh_results(
+                        outputs=mask_output,
+                        faces=sam3_3d_body_model.faces,
+                        save_dir=f"{OUTPUT_DIR}/mesh_4d_individual",
+                        focal_dir=f"{OUTPUT_DIR}/focal_4d_individual",
+                        image_path=image_path,
+                        id_current=id_current,
+                        export_formats=_mesh_export_formats,
+                    )
+                if RUNTIME.get('smpl_export', False):
+                    save_skeleton_results(
+                        outputs=mask_output,
+                        skeleton_dir=f"{OUTPUT_DIR}/skeleton_4d_individual",
+                        image_path=image_path,
+                        id_current=id_current,
+                    )
 
-        if _VIS_WORKERS > 1 and len(frame_args) > 1:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(_VIS_WORKERS, len(frame_args))) as pool:
-                for _ in pool.map(_render_and_save, frame_args):
-                    pass
-        else:
-            for args in frame_args:
-                _render_and_save(args)
+            if _VIS_WORKERS > 1 and len(frame_args) > 1:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(_VIS_WORKERS, len(frame_args))) as pool:
+                    for _ in pool.map(_render_and_save, frame_args):
+                        pass
+            else:
+                for args in frame_args:
+                    _render_and_save(args)
         print(f"  [TIMER] vis+mesh+IO: {time.time() - _t_vis_start:.2f}s")
 
         print(f"  [TIMER] batch {i//batch_size} total: {time.time() - _t_batch_start:.2f}s")
@@ -1132,7 +1187,8 @@ def on_4d_generation(video_path: str):
     if RUNTIME.get('smpl_export', False):
         aggregate_skeleton_npz(f"{OUTPUT_DIR}/skeleton_4d_individual")
 
-    aggregate_mesh_glb(f"{OUTPUT_DIR}/mesh_4d_individual", fps=RUNTIME['video_fps'])
+    if _mesh_export_enabled and _animated_glb:
+        aggregate_mesh_glb(f"{OUTPUT_DIR}/mesh_4d_individual", fps=RUNTIME['video_fps'])
 
     out_4d_path = os.path.join(OUTPUT_DIR, f"4d_{time.time():.0f}.mp4")
     jpg_folder_to_mp4(f"{OUTPUT_DIR}/rendered_frames", out_4d_path, fps=RUNTIME['video_fps'])
