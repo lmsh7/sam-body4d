@@ -1074,6 +1074,7 @@ def on_4d_generation(video_path: str):
         mask_outputs, id_batch, empty_frame_list = process_image_with_mask(sam3_3d_body_model, batch_images, batch_masks, idx_path, idx_dict, mhr_shape_scale_dict, occ_dict, cam_int=cam_int, iou_dict=iou_dict, predictor=predictor)
         print(f"  [TIMER] HMR (process_image_with_mask): {time.time() - _t_hmr_start:.2f}s")
 
+        _t_vis_start = time.time()
         frame_args = []
         num_empth_ids = 0
         for frame_id in range(len(batch_images)):
@@ -1124,6 +1125,7 @@ def on_4d_generation(video_path: str):
         else:
             for args in frame_args:
                 _render_and_save(args)
+        print(f"  [TIMER] vis+mesh+IO: {time.time() - _t_vis_start:.2f}s")
 
         print(f"  [TIMER] batch {i//batch_size} total: {time.time() - _t_batch_start:.2f}s")
 
