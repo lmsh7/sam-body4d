@@ -33,9 +33,6 @@ dependencies = [
 
     # MoGe
     "MoGe @ git+https://github.com/microsoft/MoGe.git",
-
-    # FP8 quantization
-    "torchao>=0.7",
 ]
 
 [tool.setuptools]
