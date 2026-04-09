@@ -129,7 +129,7 @@ class PyTorch3DBatchRenderer:
                 image_size=(H, W),
                 blur_radius=0.0,
                 faces_per_pixel=1,
-                # bin_size omitted → PyTorch3D auto-selects coarse-to-fine
+                max_faces_per_bin=50000,
             )
         return self._raster_cache[key]
 
