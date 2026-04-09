@@ -22,9 +22,9 @@ warnings.filterwarnings("ignore")
 def _quantize_unet_fp8(unet):
     """Apply FP8 dynamic quantization to UNet Linear layers for inference speedup."""
     try:
-        from torchao.quantization import quantize_, Float8DynamicActivationFloat8WeightConfig
-        quantize_(unet, Float8DynamicActivationFloat8WeightConfig())
-        print("[FP8] UNet quantized to float8 dynamic activation + float8 weight")
+        from torchao.quantization import quantize_, float8_dynamic_activation_float8_weight
+        quantize_(unet, float8_dynamic_activation_float8_weight())
+        print(f"[FP8] UNet quantized to float8 dynamic activation + float8 weight")
     except ImportError:
         print("[FP8] torchao not installed, skipping FP8 quantization. "
               "Install with: pip install torchao")
