@@ -698,7 +698,7 @@ def inference(args):
             visualize_detections(image, outputs, vis_path)
             return
 
-        inference_state = predictor.predictor.init_state(video_path=args.input_video)
+        inference_state = predictor.predictor.init_state(video_path=args.input_video, offload_video_to_cpu=True, offload_state_to_cpu=True)
         predictor.predictor.clear_all_points_in_video(inference_state)
         predictor.RUNTIME['inference_state'] = inference_state
         predictor.RUNTIME['out_obj_ids'] = []
@@ -739,7 +739,7 @@ def inference(args):
             visualize_detections(np.array(det_image), outputs, vis_path)
             return
 
-        inference_state = predictor.predictor.init_state(video_path=image_list)
+        inference_state = predictor.predictor.init_state(video_path=image_list, offload_video_to_cpu=True, offload_state_to_cpu=True)
         predictor.predictor.clear_all_points_in_video(inference_state)
         predictor.RUNTIME['inference_state'] = inference_state
         predictor.RUNTIME['out_obj_ids'] = []
